@@ -1,0 +1,286 @@
+---
+title: 'Signal'
+description: 'Time series signal extracted from CAN bus data with entropy analysis'
+---
+
+## Overview
+
+The `Signal` class represents a time series signal extracted from a specific bit range within a CAN Arbitration ID's payload. Each signal is analyzed for entropy (Shannon Index), normalized for comparison, and can be correlated with J1979 diagnostic signals.
+
+## Constructor
+
+```python
+Signal(arb_id: int, start_index: int, stop_index: int)
+```
+
+Initializes a new Signal instance representing a bit range within a CAN message.
+
+<ParamField path="arb_id" type="int" required>
+  The CAN Arbitration ID that contains this signal (e.g., 0x123)
+</ParamField>
+
+<ParamField path="start_index" type="int" required>
+  Starting bit position (inclusive) within the payload. Bit 0 is the leftmost bit of byte 0
+</ParamField>
+
+<ParamField path="stop_index" type="int" required>
+  Ending bit position (inclusive) within the payload. For an 8-byte payload, maximum is 63
+</ParamField>
+
+## Instance Attributes
+
+### Signal Identification
+
+<ResponseField name="arb_id" type="int">
+  The CAN Arbitration ID containing this signal
+</ResponseField>
+
+<ResponseField name="start_index" type="int">
+  Starting bit position (inclusive) of the signal within the payload
+</ResponseField>
+
+<ResponseField name="stop_index" type="int">
+  Ending bit position (inclusive) of the signal within the payload
+</ResponseField>
+
+### Signal Data and Metadata
+
+<ResponseField name="time_series" type="Series" default="None">
+  Pandas Series containing the decoded integer values of this signal over time. Index represents timestamps, values represent the signal data extracted from the bit range
+</ResponseField>
+
+<ResponseField name="static" type="bool" default="True">
+  Indicates if the signal contains dynamic data. Set to `False` if `shannon_index >= 0.000001`, meaning the signal shows variation
+</ResponseField>
+
+<ResponseField name="shannon_index" type="float" default="0">
+  Entropy measure quantifying the randomness/information content of the signal. Calculated as:
+  
+  ```
+  SI = -Σ(p_i * log10(p_i))
+  ```
+  
+  where `p_i` is the proportion of each unique value in the time series. Higher values indicate more diverse/random signals
+</ResponseField>
+
+<ResponseField name="plot_title" type="str" default="''">
+  Human-readable title for plotting, automatically generated as:
+  
+  ```
+  "Time Series from Bit Positions {start} to {stop} of Arb ID 0x{id}"
+  ```
+</ResponseField>
+
+### J1979 Correlation
+
+<ResponseField name="j1979_title" type="str" default="None">
+  If correlated with a J1979 diagnostic signal, stores the PID name (e.g., "Engine RPM", "Speed km/h")
+</ResponseField>
+
+<ResponseField name="j1979_pcc" type="float" default="0">
+  Pearson Correlation Coefficient with the matched J1979 signal. Range: [-1.0, 1.0]. Values near ±1.0 indicate strong correlation
+</ResponseField>
+
+## Methods
+
+### normalize_and_set_metadata
+
+```python
+normalize_and_set_metadata(normalize_strategy: Callable) -> None
+```
+
+Orchestrates the complete signal analysis pipeline: calculates Shannon Index, updates static flag, generates plot title, and normalizes the time series.
+
+<ParamField path="normalize_strategy" type="Callable" required>
+  Normalization function applied to `time_series.values`. Typically `sklearn.preprocessing.minmax_scale`. Must accept parameters: `(array, copy)`
+</ParamField>
+
+**Process:**
+1. Calls `set_shannon_index()` to calculate entropy
+2. Calls `update_static()` to set dynamic/static classification
+3. Calls `set_plot_title()` to generate human-readable title
+4. Calls `normalize()` to scale time series values
+
+**Example Usage:**
+```python
+from sklearn.preprocessing import minmax_scale
+
+signal = Signal(0x123, 8, 23)
+signal.time_series = pd.Series([100, 150, 200, 250, ...])
+
+signal.normalize_and_set_metadata(minmax_scale)
+# Now shannon_index, static, plot_title are set, and time_series is normalized
+```
+
+### set_shannon_index
+
+```python
+set_shannon_index() -> None
+```
+
+Calculates the Shannon Entropy Index for the signal's time series data. This measures the diversity and information content of the signal.
+
+**Shannon Index Formula:**
+```
+SI = -Σ(p_i * log10(p_i))
+```
+
+Where:
+- `p_i` = proportion of value `i` in the total population
+- Summation is over all unique values in the time series
+
+**Interpretation:**
+- `SI ≈ 0`: Signal contains mostly one value (low entropy, likely static or counter)
+- `SI ≈ 1-2`: Signal contains moderate diversity (typical sensors)
+- `SI > 2`: Signal contains high diversity (random, multi-state, or high-resolution sensor)
+
+**Example:**
+```python
+signal.time_series = pd.Series([0, 0, 1, 0, 1, 1, 0, 1])  # 50% zeros, 50% ones
+signal.set_shannon_index()
+print(signal.shannon_index)  # ≈ 0.301 (moderate entropy for binary signal)
+```
+
+### update_static
+
+```python
+update_static() -> None
+```
+
+Updates the `static` attribute based on the Shannon Index. Sets `static = False` if the signal shows meaningful variation.
+
+**Threshold:** `shannon_index >= 0.000001`
+
+This conservative threshold ensures that even minimal entropy marks a signal as dynamic, filtering out only truly constant values.
+
+**Example:**
+```python
+signal.shannon_index = 0.0
+signal.update_static()
+print(signal.static)  # True - no variation
+
+signal.shannon_index = 0.5
+signal.update_static()
+print(signal.static)  # False - contains dynamic data
+```
+
+### set_plot_title
+
+```python
+set_plot_title() -> None
+```
+
+Generates a descriptive title string for visualization purposes.
+
+**Format:**
+```
+"Time Series from Bit Positions {start_index} to {stop_index} of Arb ID 0x{arb_id}"
+```
+
+**Example:**
+```python
+signal = Signal(0x123, 16, 31)
+signal.set_plot_title()
+print(signal.plot_title)
+# Output: "Time Series from Bit Positions 16 to 31 of Arb ID 0x123"
+```
+
+### normalize
+
+```python
+normalize(normalize_strategy: Callable) -> None
+```
+
+Normalizes the signal's time series values in-place using the provided strategy.
+
+<ParamField path="normalize_strategy" type="Callable" required>
+  Normalization function (e.g., `sklearn.preprocessing.minmax_scale`). Applied to `time_series.values` with `copy=False` for in-place modification
+</ParamField>
+
+**Common Strategies:**
+- **Min-Max Scaling:** Scales values to [0, 1] range
+- **Z-Score Normalization:** Centers data around mean with unit variance
+- **Robust Scaling:** Uses median and IQR for outlier resistance
+
+**Example:**
+```python
+from sklearn.preprocessing import minmax_scale
+
+signal.time_series = pd.Series([100, 200, 300, 400, 500])
+signal.normalize(minmax_scale)
+print(signal.time_series.values)
+# Output: [0.0, 0.25, 0.5, 0.75, 1.0]
+```
+
+## Usage Example
+
+```python
+from Pipeline.Signal import Signal
+from sklearn.preprocessing import minmax_scale
+import pandas as pd
+
+# Create signal from Arb ID 0x123, bits 16-31 (byte 2-3)
+signal = Signal(arb_id=0x123, start_index=16, stop_index=31)
+
+# Simulate extracted time series data
+signal.time_series = pd.Series(
+    data=[1500, 1520, 1540, 1560, 1580],
+    index=[0.0, 0.01, 0.02, 0.03, 0.04],  # Timestamps in seconds
+    name="RPM_Signal"
+)
+
+# Analyze and normalize
+signal.normalize_and_set_metadata(minmax_scale)
+
+# Check results
+print(f"Signal: {signal.plot_title}")
+print(f"Shannon Index: {signal.shannon_index:.4f}")
+print(f"Static: {signal.static}")
+print(f"Normalized values: {signal.time_series.values[:5]}")
+
+# If correlated with J1979 during semantic analysis
+if signal.j1979_title:
+    print(f"Matched to J1979: {signal.j1979_title} (r={signal.j1979_pcc:.3f})")
+```
+
+## Pipeline Integration
+
+The Signal class is used in multiple pipeline stages:
+
+1. **Lexical Analysis** (`LexicalAnalysis.generate_signals()`):
+   - Creates Signal instances from tokenized bit ranges
+   - Extracts time series data from ArbID boolean matrices
+   - Calls `normalize_and_set_metadata()` for each signal
+
+2. **Semantic Analysis** (`SemanticAnalysis.subset_selection()`):
+   - Filters signals based on Shannon Index and static flags
+   - Selects subset for correlation analysis
+
+3. **J1979 Labeling** (`SemanticAnalysis.j1979_signal_labeling()`):
+   - Correlates signals with J1979 diagnostic data
+   - Sets `j1979_title` and `j1979_pcc` for matched signals
+
+4. **Visualization** (`Plotter.plot_signals_by_arb_id()`):
+   - Uses `plot_title` and `j1979_title` for labeling
+   - Displays normalized time series
+
+## Bit Indexing Convention
+
+Signals use zero-based bit indexing where:
+- **Bit 0** = leftmost bit of byte 0 (b0)
+- **Bits 0-7** = byte 0 (b0)
+- **Bits 8-15** = byte 1 (b1)
+- **Bits 16-23** = byte 2 (b2)
+- **Bits 56-63** = byte 7 (b7)
+
+**Example Signal Ranges:**
+```python
+# Single byte signal (byte 2)
+signal = Signal(0x123, 16, 23)
+
+# Multi-byte signal (bytes 3-4, 16 bits)
+signal = Signal(0x123, 24, 39)
+
+# Partial byte signal (lower 4 bits of byte 0)
+signal = Signal(0x123, 4, 7)
+```

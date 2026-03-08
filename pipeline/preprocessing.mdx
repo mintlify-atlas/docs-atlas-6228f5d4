@@ -1,0 +1,322 @@
+---
+title: "Preprocessing"
+description: "Transform raw CAN log files into structured data ready for analysis"
+---
+
+## Overview
+
+The preprocessing phase is the first stage of the CAN reverse engineering pipeline. It imports raw CAN log data from CSV files, converts it to Pandas DataFrames, transforms hex values to binary matrices, and calculates the TANG (Transition Analysis Numerical Gradient) for each Arbitration ID.
+
+## Key Responsibilities
+
+<Steps>
+  <Step title="Import CSV Data">
+    Read CAN log files in TSV format with columns: time, id, dlc, b0-b7
+  </Step>
+  <Step title="Convert to DataFrames">
+    Transform each Arbitration ID's data into a separate Pandas DataFrame
+  </Step>
+  <Step title="Generate Binary Matrix">
+    Convert hexadecimal payload bytes to binary matrix representation
+  </Step>
+  <Step title="Calculate TANG">
+    Compute transition frequencies for each bit position using XOR operations
+  </Step>
+  <Step title="Extract J1979 Signals">
+    Detect and extract OBD-II diagnostic signals (if present)
+  </Step>
+  <Step title="Analyze Transmission Frequency">
+    Calculate statistical properties of message transmission intervals
+  </Step>
+</Steps>
+
+## PreProcessor Class
+
+The `PreProcessor` class (defined in `PreProcessor.py`) orchestrates the entire preprocessing phase.
+
+### Initialization
+
+```python
+from PreProcessor import PreProcessor
+
+pre_processor = PreProcessor(
+    data_filename="loggerProgram0.log",
+    id_output_filename="pickleArbIDs.p",
+    j1979_output_filename="pickleJ1979.p"
+)
+```
+
+<ParamField path="data_filename" type="str" required>
+  Path to the input CAN log file in TSV format
+</ParamField>
+
+<ParamField path="id_output_filename" type="str" required>
+  Path where the Arbitration ID dictionary will be pickled
+</ParamField>
+
+<ParamField path="j1979_output_filename" type="str" required>
+  Path where J1979 diagnostic signals will be pickled
+</ParamField>
+
+## CSV Import
+
+The `import_csv()` method reads CAN log files with automatic type conversion.
+
+### File Format
+
+Expected CSV format (whitespace-delimited, skips first 7 header rows):
+
+```
+time        id   dlc  b0  b1  b2  b3  b4  b5  b6  b7
+1234.567s   123  8    00  01  02  03  04  05  06  07
+```
+
+### Conversion Functions
+
+The import process applies converters to each column (see `PreProcessor.py:36-37`):
+
+```python
+convert_dict = {
+    'time': fix_time,      # Removes 's' suffix and converts to float
+    'id': hex2int,         # Converts hex string to int
+    'dlc': hex2int,        # Data Length Code to int
+    'b0': hex2int,         # Byte 0 hex to int
+    'b1': hex2int,         # Byte 1 hex to int
+    # ... b2 through b7
+}
+```
+
+<Note>
+  The CSV reader automatically skips 7 header rows and uses whitespace as the delimiter.
+</Note>
+
+## Binary Matrix Generation
+
+Each Arbitration ID's hex payload is converted to a binary matrix in `ArbID.generate_binary_matrix_and_tang()` (`ArbID.py:29-59`).
+
+### Process
+
+```python
+# For each message (row) and each byte (column)
+for i, row in enumerate(self.original_data.itertuples()):
+    for j, cell in enumerate(row[1:]):
+        if cell > 0:
+            bin_string = format(cell, '08b')  # Convert to 8-bit binary
+            self.boolean_matrix[i, j*8:j*8+8] = [x == '1' for x in bin_string]
+```
+
+This creates a matrix where:
+- **Rows** = individual CAN messages (time samples)
+- **Columns** = bit positions (DLC × 8 bits)
+- **Values** = 0 or 1 (binary representation)
+
+<Info>
+  A message with DLC=8 produces 64 columns (8 bytes × 8 bits). If DLC < 8, unused bytes are automatically dropped.
+</Info>
+
+## TANG Calculation
+
+The **Transition Analysis Numerical Gradient (TANG)** measures how frequently each bit position changes between consecutive messages.
+
+### Implementation
+
+From `ArbID.py:52-57`:
+
+```python
+# XOR consecutive rows to detect bit transitions
+transition_matrix = logical_xor(
+    self.boolean_matrix[:-1, ],  # All rows except last
+    self.boolean_matrix[1:, ]     # All rows except first
+)
+
+# Sum transitions for each bit position
+self.tang = sum(transition_matrix, axis=0, dtype=float64)
+
+# Normalize using min-max scaling
+if max(self.tang) > 0:
+    normalize_strategy(self.tang, axis=0, copy=False)
+    self.static = False
+```
+
+### Interpretation
+
+- **High TANG values** (close to 1.0): Bit position changes frequently → likely part of a dynamic signal
+- **Low TANG values** (close to 0.0): Bit position rarely changes → likely padding or static data
+- **Zero TANG value**: Bit never changes → padding bit
+
+<Tip>
+  TANG values are normalized using min-max scaling by default, making them comparable across different Arbitration IDs.
+</Tip>
+
+## J1979 Signal Detection
+
+J1979 (OBD-II) diagnostic signals use specific Arbitration IDs:
+
+- **0x7DF (2015)**: Diagnostic requests (ignored)
+- **0x7E8 (2024)**: Diagnostic responses (extracted)
+
+From `PreProcessor.py:96-108`:
+
+```python
+if arb_id == 2015:
+    # J1979 requests - ignore
+    continue
+elif arb_id == 2024:
+    # J1979 responses - extract
+    j1979_data = self.data.loc[self.data['id'] == arb_id].copy()
+    j1979_dictionary = self.generate_j1979_dictionary(j1979_data)
+```
+
+The `J1979` class (in `J1979.py`) processes common diagnostic PIDs:
+
+- **0x0C**: Engine RPM
+- **0x0D**: Vehicle Speed (km/h)
+- **0x11**: Throttle Position (%)
+- **0x61**: Demand Torque (%)
+- **0x62**: Actual Torque (%)
+- **0x63**: Reference Torque (Nm)
+- **0x8E**: Engine Friction Torque (%)
+
+<Warning>
+  If your log contains J1979 PIDs not listed above, you'll need to extend the `J1979.process_response_data()` method in `J1979.py`.
+</Warning>
+
+## Transmission Frequency Analysis
+
+The `analyze_transmission_frequency()` method calculates statistical properties of message timing (`ArbID.py:61-89`).
+
+### Metrics Calculated
+
+```python
+# Calculate intervals between consecutive messages
+freq_intervals = self.original_data.index[1:] - self.original_data.index[:-1]
+
+# Mean transmission interval (converted to milliseconds)
+self.freq_mean = mean(freq_intervals) * time_convert
+
+# Standard deviation
+self.freq_std = std(freq_intervals, ddof=1) * time_convert
+
+# Confidence interval
+mean_offset = ci_accuracy * self.freq_std / sqrt(len(freq_intervals))
+self.freq_ci = (self.freq_mean - mean_offset, self.freq_mean + mean_offset)
+
+# Ratio of CI range to mean (synchronicity metric)
+self.mean_to_ci_ratio = 2 * mean_offset / self.freq_mean
+```
+
+### Synchronous Detection
+
+An Arbitration ID is marked as **synchronous** if:
+
+```python
+if self.mean_to_ci_ratio <= synchronous_threshold:
+    self.synchronous = True
+```
+
+This heuristic identifies messages transmitted at regular, clock-driven intervals.
+
+## Configuration Parameters
+
+All parameters are defined in `Main.py:64-68`:
+
+<ParamField path="time_conversion" type="int" default="1000">
+  Multiplier to convert time units (default: seconds to milliseconds)
+</ParamField>
+
+<ParamField path="freq_analysis_accuracy" type="float" default="1.645">
+  Z-score for confidence interval calculation (0.9 = 90% confidence)
+  
+  Common values:
+  - 1.28 → 80% confidence
+  - 1.645 → 90% confidence  
+  - 1.96 → 95% confidence
+  - 2.33 → 98% confidence
+  - 2.58 → 99% confidence
+</ParamField>
+
+<ParamField path="freq_synchronous_threshold" type="float" default="0.1">
+  Maximum mean-to-CI ratio for a signal to be considered synchronous
+  
+  Lower values = stricter synchronicity requirement
+</ParamField>
+
+<ParamField path="force" type="bool" default="false">
+  If true, regenerates all data from scratch instead of loading cached pickles
+</ParamField>
+
+## Usage Example
+
+From `Main.py:83-90`:
+
+```python
+from PreProcessor import PreProcessor
+from sklearn.preprocessing import minmax_scale
+from PipelineTimer import PipelineTimer
+
+tang_normalize_strategy = minmax_scale
+a_timer = PipelineTimer(verbose=True)
+
+pre_processor = PreProcessor(
+    can_data_filename="loggerProgram0.log",
+    pickle_arb_id_filename="pickleArbIDs.p",
+    pickle_j1979_filename="pickleJ1979.p"
+)
+
+id_dictionary, j1979_dictionary = pre_processor.generate_arb_id_dictionary(
+    a_timer,
+    tang_normalize_strategy,
+    time_conversion=1000,
+    freq_analysis_accuracy=1.645,
+    freq_synchronous_threshold=0.1,
+    force=False
+)
+```
+
+## Output Data Structures
+
+### Arbitration ID Dictionary
+
+Keyed by Arbitration ID (int), values are `ArbID` objects with:
+
+- `id`: Arbitration ID (int)
+- `dlc`: Data Length Code (int)
+- `original_data`: Pandas DataFrame (time-indexed hex values)
+- `boolean_matrix`: NumPy ndarray (binary representation)
+- `tang`: NumPy ndarray (normalized transition frequencies)
+- `static`: Boolean (True if no bit ever changes)
+- `freq_mean`, `freq_std`, `freq_ci`: Transmission frequency statistics
+- `synchronous`: Boolean (True if messages are periodic)
+- `tokenization`: List of token tuples (populated in lexical analysis)
+- `padding`: List of padding bit indices (populated in lexical analysis)
+
+### J1979 Dictionary
+
+Keyed by PID (int), values are `J1979` objects with:
+
+- `pid`: Parameter ID (int)
+- `title`: Human-readable name (str)
+- `data`: Pandas Series (time-indexed converted values)
+
+## Edge Cases Handled
+
+<Steps>
+  <Step title="Variable DLC">
+    Arbitration IDs with inconsistent DLC values are ignored (`PreProcessor.py:118-119`)
+  </Step>
+  <Step title="Duplicate Timestamps">
+    Duplicate index values are automatically corrected (`PreProcessor.py:133-135`)
+  </Step>
+  <Step title="Truncated Logs">
+    Malformed final lines with incomplete time values are skipped (`PreProcessor.py:29-33`)
+  </Step>
+  <Step title="Short Sequences">
+    Arbitration IDs with fewer than 4 messages skip frequency analysis (`ArbID.py:66-67`)
+  </Step>
+</Steps>
+
+## See Also
+
+- [Lexical Analysis](/pipeline/lexical-analysis) - Next stage: tokenization
+- [ArbID Class](/api/arbid) - Complete ArbID object reference
+- [J1979 Class](/api/j1979) - OBD-II diagnostic signal handling

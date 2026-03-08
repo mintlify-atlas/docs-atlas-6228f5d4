@@ -1,0 +1,164 @@
+---
+title: 'CAN Protocol Fundamentals'
+description: 'Understanding the Controller Area Network protocol and its role in vehicle communication'
+---
+
+## Overview
+
+The **Controller Area Network (CAN)** is a robust vehicle bus standard designed to allow microcontrollers and devices to communicate with each other without a host computer. Originally developed by Bosch in the 1980s for automotive applications, CAN has become the de facto standard for in-vehicle communications.
+
+## CAN Frame Structure
+
+A CAN frame consists of several critical components:
+
+### Arbitration ID
+
+The **Arbitration ID (Arb ID)** is a unique identifier for each message on the CAN bus. It serves two purposes:
+
+1. **Message Identification**: Identifies the type and source of data being transmitted
+2. **Bus Arbitration**: Lower numerical IDs have higher priority during bus contention
+
+```python
+# Example from ArbID.py
+class ArbID:
+    def __init__(self, arb_id: int):
+        self.id: int = arb_id
+        self.dlc: int = 0
+        self.original_data: DataFrame = None
+```
+
+Arbitration IDs can be:
+- **Standard Format**: 11-bit identifier (0-0x7FF)
+- **Extended Format**: 29-bit identifier (0-0x1FFFFFFF)
+
+<Info>
+Most passenger vehicles use standard 11-bit Arb IDs for cost and simplicity reasons.
+</Info>
+
+### Data Length Code (DLC)
+
+The **DLC** specifies the number of data bytes in the payload, ranging from 0 to 8 bytes.
+
+```python
+# From PreProcessor.py - Handling variable DLC
+if this_id.original_data['dlc'].nunique() != 1:
+    continue  # Ignore Arb IDs with inconsistent DLC
+this_id.dlc = this_id.original_data['dlc'].iloc[0]
+```
+
+### Payload Data
+
+The payload consists of 0-8 bytes (b0-b7) containing the actual information being transmitted. Each byte can hold values from 0x00 to 0xFF.
+
+```text
+CAN Frame Example:
+Time    | ID    | DLC | b0 | b1 | b2 | b3 | b4 | b5 | b6 | b7
+1.2345  | 0x124 | 8   | 3C | A7 | 00 | FF | 12 | 34 | 56 | 78
+```
+
+## Bit-Level Representation
+
+Each byte in the payload can be converted to a binary matrix for analysis:
+
+```python
+# From ArbID.py - Converting hex to binary matrix
+for i, row in enumerate(self.original_data.itertuples()):
+    for j, cell in enumerate(row[1:]):
+        if cell > 0:
+            bin_string = format(cell, '08b')
+            self.boolean_matrix[i, j * 8:j * 8 + 8] = [x == '1' for x in bin_string]
+```
+
+This creates a matrix where each bit position can be analyzed independently for patterns and transitions.
+
+## J1979 Standard (SAE)
+
+The **SAE J1979** standard defines a set of diagnostic services for accessing vehicle data:
+
+### Standard Request/Response Pattern
+
+- **Request ID**: 0x7DF (broadcast) or 0x7E0-0x7E7 (specific ECU)
+- **Response ID**: 0x7E8-0x7EF (typically request ID + 0x8)
+
+### Common PIDs (Parameter IDs)
+
+| PID | Description | Data Bytes | Formula |
+|-----|-------------|------------|----------|
+| 0x0C | Engine RPM | 2 | (256*A + B) / 4 |
+| 0x0D | Vehicle Speed | 1 | A km/h |
+| 0x11 | Throttle Position | 1 | A * 100/255 % |
+| 0x61 | Demand Torque % | 1 | A - 125 |
+
+```python
+# From J1979.py - Example PID processing
+if self.pid == 12:
+    self.title = 'Engine RPM'
+    return Series(data=(256*original_data['b3']+original_data['b4'])/4,
+                  index=original_data.index,
+                  name=self.title,
+                  dtype=float16)
+```
+
+<Note>
+J1979 data is publicly documented and does not require reverse engineering. The pipeline automatically detects and extracts J1979 signals for use as ground truth.
+</Note>
+
+## Why Reverse Engineering is Needed
+
+While J1979 provides standardized diagnostic data, the majority of CAN traffic in modern vehicles uses **proprietary protocols**:
+
+### Challenges
+
+1. **No Public Documentation**: OEMs keep their signal definitions secret
+2. **Packed Signals**: Multiple signals share the same payload bytes
+3. **Variable Encodings**: Signals may use different bit positions, byte orders, and scaling factors
+4. **Mixed Endianness**: Both big-endian and little-endian signals coexist
+
+### Example: Proprietary Signal
+
+```text
+Arb ID 0x245 with 8-byte payload:
+b0-b1: Steering angle (16-bit, big-endian, 0.1 deg/bit)
+b2-b4: Unknown (padding?)
+b5-b7: Wheel speed (24-bit, little-endian, 0.01 km/h/bit)
+```
+
+<Tip>
+Reverse engineering these proprietary signals enables applications like security auditing, aftermarket diagnostics, and vehicle behavior analysis.
+</Tip>
+
+## Transmission Patterns
+
+CAN messages exhibit different transmission behaviors:
+
+### Synchronous Transmission
+
+Messages sent at regular, predictable intervals (e.g., every 10ms, 100ms).
+
+```python
+# From ArbID.py - Frequency analysis
+def analyze_transmission_frequency(self,
+                                   time_convert: int = 1000,
+                                   ci_accuracy: float = 1.645,
+                                   synchronous_threshold: float = 0.1):
+    freq_intervals = self.original_data.index[1:] - self.original_data.index[:-1]
+    self.freq_mean = mean(freq_intervals) * time_convert
+    self.freq_std = std(freq_intervals, ddof=1) * time_convert
+    # ...
+    self.mean_to_ci_ratio = 2*mean_offset/self.freq_mean
+    if self.mean_to_ci_ratio <= synchronous_threshold:
+        self.synchronous = True
+```
+
+### Asynchronous/Event-Driven
+
+Messages sent only when data changes or events occur (e.g., button press, door open).
+
+<Info>
+The pipeline uses a 90% confidence interval analysis to classify Arb IDs as synchronous or asynchronous based on the consistency of their transmission timing.
+</Info>
+
+## Next Steps
+
+- Learn about the [Pipeline Architecture](/concepts/pipeline-overview) for processing CAN data
+- Explore [Reverse Engineering Techniques](/concepts/reverse-engineering) used to extract signals

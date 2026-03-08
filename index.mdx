@@ -1,97 +1,119 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "CAN Reverse Engineering"
+description: "Automated payload reverse engineering pipeline for the Controller Area Network (CAN) protocol using machine learning"
 ---
 
-## Setting up
+<div style={{
+  background: 'linear-gradient(135deg, #bd8236 0%, #dad2cb 100%)',
+  padding: '4rem 2rem',
+  borderRadius: '20px',
+  marginBottom: '2rem',
+  color: '#ffffff'
+}}>
+  <h1 style={{ fontSize: '3rem', fontWeight: '700', marginBottom: '1rem', color: '#ffffff' }}>
+    CAN Reverse Engineering
+  </h1>
+  <p style={{ fontSize: '1.25rem', marginBottom: '2rem', color: '#ffffff' }}>
+    Automated payload reverse engineering pipeline for the Controller Area Network (CAN) protocol using machine learning
+  </p>
+</div>
 
-Get your documentation site up and running in minutes.
+## Overview
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+This project provides Python and R scripts for automated reverse engineering of Controller Area Network (CAN) payloads observed from passenger vehicles. Originally developed by Dr. Brent Stone at the Air Force Institute of Technology, this research tool uses machine learning techniques to analyze and decode proprietary CAN bus signals.
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
+<CardGroup cols={2}>
   <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
+    title="Get Started"
+    icon="rocket"
+    href="/quickstart"
   >
-    Edit your docs locally and preview them in real time.
+    Install and run your first CAN analysis in minutes
   </Card>
   <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
+    title="Pipeline Overview"
+    icon="diagram-project"
+    href="/concepts/pipeline-overview"
   >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+    Understand the three-phase reverse engineering process
   </Card>
   <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
-
-## Create beautiful pages
-
-Everything you need to create world-class documentation.
-
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
+    title="API Reference"
     icon="code"
-    href="/essentials/code"
+    href="/api/arbid"
   >
-    Add sample code to demonstrate how to use your product.
+    Explore the core classes and modules
   </Card>
   <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
+    title="Advanced Features"
+    icon="flask"
+    href="/advanced/multi-file-processing"
   >
-    Display images and other media.
+    Multi-file batch processing and validation
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={3}>
+  <Card
+    title="Lexical Analysis"
+    icon="magnifying-glass"
+  >
+    Bit-level tokenization and signal extraction from CAN payloads
   </Card>
   <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
+    title="Semantic Analysis"
+    icon="brain"
   >
-    Write once and reuse across your docs.
+    Correlation-based clustering to identify related signals
   </Card>
-</Columns>
+  <Card
+    title="J1979 Detection"
+    icon="car"
+  >
+    Automatic identification of SAE J1979 standard signals
+  </Card>
+  <Card
+    title="Time Series Visualization"
+    icon="chart-line"
+  >
+    Plot and analyze signal behavior over time
+  </Card>
+  <Card
+    title="Multi-File Processing"
+    icon="files"
+  >
+    Batch process multiple CAN log files automatically
+  </Card>
+  <Card
+    title="EDM Integration"
+    icon="arrow-trend-up"
+  >
+    Empirical Dynamic Modeling with R scripts
+  </Card>
+</CardGroup>
 
-## Need inspiration?
+## Quick Example
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+```python Main.py
+# Run the basic pipeline
+python Main.py loggerProgram0.log
+
+# Process can-utils format
+python Main.py -c inputFile.log
+```
+
+The pipeline automatically:
+1. **Pre-processes** CAN data and identifies J1979 signals
+2. **Tokenizes** payloads to extract individual signals
+3. **Clusters** signals by correlation
+4. **Generates** visualizations and reports
+
+## Research Foundation
+
+This code was developed in pursuit of a Ph.D. in Computer Science. For details about the methods and algorithms used, see the included dissertation: **"Enabling Auditing and Intrusion Detection for Proprietary Controller Area Networks"** (AFIT-END-DS-18-D-003.pdf).
+
+<Note>
+The views expressed in this project are those of the author and do not reflect the official policy or position of the United States Air Force, Department of Defense, or United States Government.
+</Note>

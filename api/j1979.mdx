@@ -1,0 +1,395 @@
+---
+title: 'J1979'
+description: 'SAE J1979 OBD-II diagnostic signal processor and decoder'
+---
+
+## Overview
+
+The `J1979` class processes and decodes SAE J1979 (OBD-II) diagnostic signals captured from CAN bus traffic. It handles ISO-TP formatted Universal Diagnostic Service (UDS) responses, converting raw byte data into physical units based on standardized Parameter ID (PID) specifications.
+
+J1979 signals serve as ground truth labels during semantic analysis, allowing the pipeline to identify and correlate unknown CAN signals with known diagnostic parameters.
+
+## Constructor
+
+```python
+J1979(pid: int, original_data: DataFrame)
+```
+
+Initializes a J1979 signal processor for a specific PID and processes the response data.
+
+<ParamField path="pid" type="int" required>
+  Parameter ID value in decimal (e.g., 12 for Engine RPM, 13 for Vehicle Speed). Supported PIDs:
+  - `12` (0x0C): Engine RPM
+  - `13` (0x0D): Vehicle Speed
+  - `17` (0x11): Throttle Position
+  - `97` (0x61): Demand Torque %
+  - `98` (0x62): Actual Torque %
+  - `99` (0x63): Reference Torque
+  - `142` (0x8E): Engine Friction Torque %
+</ParamField>
+
+<ParamField path="original_data" type="DataFrame" required>
+  Pandas DataFrame containing ISO-TP UDS response data. Must have columns `['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7']` representing the 8-byte CAN payload, with timestamps as the index
+</ParamField>
+
+**Constructor automatically:**
+1. Validates and stores the PID
+2. Calls `process_response_data()` to decode the payload
+3. Stores decoded values in `data` Series
+4. Prints confirmation message with PID and title
+
+## Instance Attributes
+
+<ResponseField name="pid" type="int">
+  The Parameter ID in decimal (e.g., 12, 13, 17)
+</ResponseField>
+
+<ResponseField name="title" type="str" default="''">
+  Human-readable name of the diagnostic parameter. Set by `process_response_data()` based on PID:
+  - PID 12: "Engine RPM"
+  - PID 13: "Speed km/h"
+  - PID 17: "Throttle %"
+  - PID 97: "Demand Torque %"
+  - PID 98: "Actual Torque %"
+  - PID 99: "Reference Torque Nm"
+  - PID 142: "Engine Friction Torque %"
+</ResponseField>
+
+<ResponseField name="data" type="Series">
+  Pandas Series containing the decoded diagnostic values in physical units (RPM, km/h, %, Nm). Index matches the original_data timestamps. Data type varies by PID (float16, uint8, int8, uint16)
+</ResponseField>
+
+## Methods
+
+### process_response_data
+
+```python
+process_response_data(original_data: DataFrame) -> Series
+```
+
+Decodes ISO-TP UDS response data according to SAE J1979 specifications for the configured PID.
+
+<ParamField path="original_data" type="DataFrame" required>
+  DataFrame with columns `['b0', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7']` containing decimal byte values
+</ParamField>
+
+**Returns:** Pandas Series with decoded values and appropriate data type
+
+**Raises:** `ValueError` if the PID is not implemented
+
+## ISO-TP UDS Response Format
+
+J1979 responses follow the ISO-TP + UDS protocol structure:
+
+```
+Byte Position:  b0              b1              b2          b3 ... b7
+Content:        Response Size   UDS Mode+0x40   UDS PID     Response Data
+Example:        0x02            0x41            0x0C        0x1A 0xF8 ...
+```
+
+**Request Format (Arb ID 0x7DF, DLC 8):**
+```
+b0=0x02  b1=0x01  b2={PID}  b3-b7=0x00
+```
+
+**Response Format (Arb ID 0x7E8 = 0x7DF + 0x8):**
+```
+b0={size}  b1=0x41  b2={PID}  b3-b7={data}
+```
+
+<Note>
+  The response data is already in decimal format in the DataFrame. Byte b1 should be 0x41 (65 decimal) for successful responses. Other values indicate UDS error codes.
+</Note>
+
+## Supported PIDs
+
+### PID 0x0C (12) - Engine RPM
+
+<ResponseField name="title" type="str">
+  "Engine RPM"
+</ResponseField>
+
+**Data Format:** 2 bytes (b3, b4)
+
+**Conversion Formula:**
+```python
+rpm = (256 * b3 + b4) / 4
+```
+
+**Range:** 0 to 16,383.75 RPM
+
+**Data Type:** `float16`
+
+**Example:**
+```python
+# Response: b3=0x1A (26), b4=0xF8 (248)
+rpm = (256 * 26 + 248) / 4 = 1,726 RPM
+```
+
+### PID 0x0D (13) - Vehicle Speed
+
+<ResponseField name="title" type="str">
+  "Speed km/h"
+</ResponseField>
+
+**Data Format:** 1 byte (b3)
+
+**Conversion Formula:**
+```python
+speed = b3  # Direct km/h
+```
+
+**Range:** 0 to 255 km/h (0 to 158.45 mph)
+
+**Data Type:** `uint8`
+
+**Example:**
+```python
+# Response: b3=0x64 (100)
+speed = 100 km/h
+```
+
+### PID 0x11 (17) - Throttle Position
+
+<ResponseField name="title" type="str">
+  "Throttle %"
+</ResponseField>
+
+**Data Format:** 1 byte (b3)
+
+**Conversion Formula:**
+```python
+throttle = (b3 * 100) / 255
+```
+
+**Range:** 0 to 100%
+
+**Data Type:** `uint8`
+
+**Example:**
+```python
+# Response: b3=0x80 (128)
+throttle = (128 * 100) / 255 = 50.2%
+```
+
+### PID 0x61 (97) - Demand Torque
+
+<ResponseField name="title" type="str">
+  "Demand Torque %"
+</ResponseField>
+
+**Data Format:** 1 byte (b3)
+
+**Conversion Formula:**
+```python
+demand_torque = b3 - 125
+```
+
+**Range:** -125% to 130%
+
+**Data Type:** `int8`
+
+**Example:**
+```python
+# Response: b3=0xFA (250)
+demand_torque = 250 - 125 = 125%
+```
+
+### PID 0x62 (98) - Actual Engine Torque
+
+<ResponseField name="title" type="str">
+  "Actual Torque %"
+</ResponseField>
+
+**Data Format:** 1 byte (b3)
+
+**Conversion Formula:**
+```python
+actual_torque = b3 - 125
+```
+
+**Range:** -125% to 130%
+
+**Data Type:** `int8`
+
+**Example:**
+```python
+# Response: b3=0x7D (125)
+actual_torque = 125 - 125 = 0%
+```
+
+### PID 0x63 (99) - Reference Torque
+
+<ResponseField name="title" type="str">
+  "Reference Torque Nm"
+</ResponseField>
+
+**Data Format:** 2 bytes (b3, b4)
+
+**Conversion Formula:**
+```python
+reference_torque = 256 * b3 + b4
+```
+
+**Range:** 0 to 65,535 Nm
+
+**Data Type:** `uint16`
+
+**Example:**
+```python
+# Response: b3=0x01 (1), b4=0xF4 (244)
+reference_torque = 256 * 1 + 244 = 500 Nm
+```
+
+### PID 0x8E (142) - Engine Friction Torque
+
+<ResponseField name="title" type="str">
+  "Engine Friction Torque %"
+</ResponseField>
+
+**Data Format:** 1 byte (b3)
+
+**Conversion Formula:**
+```python
+friction_torque = b3 - 125
+```
+
+**Range:** -125% to 130%
+
+**Data Type:** `int8`
+
+**Example:**
+```python
+# Response: b3=0x6E (110)
+friction_torque = 110 - 125 = -15%
+```
+
+## Usage Example
+
+```python
+from Pipeline.J1979 import J1979
+import pandas as pd
+
+# Sample ISO-TP UDS response data for Engine RPM (PID 0x0C)
+response_data = pd.DataFrame({
+    'b0': [0x04, 0x04, 0x04],  # Response size
+    'b1': [0x41, 0x41, 0x41],  # UDS mode (0x01 + 0x40)
+    'b2': [0x0C, 0x0C, 0x0C],  # PID (Engine RPM)
+    'b3': [0x1A, 0x1E, 0x22],  # Data byte 1
+    'b4': [0xF8, 0x14, 0x30],  # Data byte 2
+    'b5': [0x00, 0x00, 0x00],
+    'b6': [0x00, 0x00, 0x00],
+    'b7': [0x00, 0x00, 0x00]
+}, index=[0.0, 0.1, 0.2])  # Timestamps
+
+# Create J1979 signal processor
+j1979_signal = J1979(pid=12, original_data=response_data)
+
+# Output: "Found 3 responses for J1979 PID 0xc: Engine RPM"
+
+print(j1979_signal.title)  # "Engine RPM"
+print(j1979_signal.data.values)  # [1726.0, 1925.0, 2124.0]
+```
+
+## Pipeline Integration
+
+### Pre-Processing Detection
+
+In `PreProcessor.generate_arb_id_dictionary()`:
+
+```python
+# Detect J1979 request pattern in Arb ID 0x7DF
+if arb_id == 0x7DF:
+    # Extract requested PIDs from byte 2
+    requested_pids = df['b2'].unique()
+    
+    # Look for responses in Arb ID 0x7E8
+    if 0x7E8 in captured_arb_ids:
+        response_df = arb_id_dict[0x7E8].original_data
+        
+        for pid in requested_pids:
+            # Filter responses for this PID
+            pid_responses = response_df[response_df['b2'] == pid]
+            
+            # Create J1979 instance
+            j1979_dict[pid] = J1979(pid=pid, original_data=pid_responses)
+```
+
+### Semantic Analysis Correlation
+
+In `SemanticAnalysis.j1979_signal_labeling()`:
+
+```python
+# Correlate extracted signals with J1979 ground truth
+for signal in signal_dictionary.values():
+    for pid, j1979 in j1979_dictionary.items():
+        # Calculate Pearson correlation
+        correlation = signal.time_series.corr(j1979.data)
+        
+        # If correlation exceeds threshold
+        if abs(correlation) >= correlation_threshold:
+            signal.j1979_title = j1979.title
+            signal.j1979_pcc = correlation
+            print(f"Signal {signal.plot_title} matched to {j1979.title} (r={correlation:.3f})")
+```
+
+### Visualization
+
+In `Plotter.plot_j1979()`:
+
+```python
+# Plot J1979 signals as ground truth reference
+for pid, j1979 in j1979_dictionary.items():
+    plt.figure()
+    plt.plot(j1979.data.index, j1979.data.values)
+    plt.title(f"J1979 PID {hex(j1979.pid)}: {j1979.title}")
+    plt.xlabel("Time (s)")
+    plt.ylabel(j1979.title.split()[-1])  # Extract unit from title
+    plt.savefig(f"j1979_pid_{hex(j1979.pid)}.png")
+```
+
+## Error Handling
+
+**Unsupported PID:**
+```python
+try:
+    j1979 = J1979(pid=255, original_data=df)
+except ValueError as e:
+    print(e)
+    # "Encountered J1979 PID 0xff in Pre-Processing that hasn't been
+    #  programmed. Expand the J1979 class to handle all J1979 requests
+    #  made during data collection."
+```
+
+**Invalid Response Format:**
+
+If byte b1 is not 0x41 (65 decimal), the response contains a UDS error code. Common error codes:
+- `0x10`: General Reject
+- `0x11`: Service Not Supported
+- `0x12`: Sub-Function Not Supported
+- `0x31`: Request Out of Range
+
+Refer to the UDS chapter of the [Car Hacker's Handbook](http://opengarages.org/handbook/ebook/) for complete error code listings.
+
+## Adding New PIDs
+
+To support additional J1979 PIDs:
+
+1. Add a new `elif self.pid == {decimal_value}:` block in `process_response_data()`
+2. Set `self.title` with a descriptive name
+3. Implement the conversion formula per SAE J1979 specification
+4. Extract data from appropriate byte positions (b3, b4, etc.)
+5. Choose appropriate data type (uint8, int8, uint16, float16)
+6. Return the Series with converted values
+
+**Example - Adding PID 0x05 (Coolant Temperature):**
+```python
+elif self.pid == 5:
+    self.title = 'Coolant Temp C'
+    # PID 0x05: 1 byte (b3), formula: b3 - 40
+    # Range: -40 to 215°C
+    return Series(data=original_data['b3'] - 40,
+                  index=original_data.index,
+                  name=self.title,
+                  dtype=int8)
+```

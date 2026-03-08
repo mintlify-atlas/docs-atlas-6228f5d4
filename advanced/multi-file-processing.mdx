@@ -1,0 +1,256 @@
+---
+title: Multi-File Processing
+description: Process multiple CAN data samples in batch for cross-vehicle analysis
+---
+
+## Overview
+
+The `Pipeline_multi-file` implementation extends the basic Pipeline to automatically process multiple CAN data samples in batch. This is essential for analyzing data from multiple vehicles, driving sessions, or conditions in research settings.
+
+<Info>
+This is the most complete and robust implementation of the reverse engineering pipeline. It includes bug fixes that are NOT present in the basic Pipeline folder.
+</Info>
+
+## Key Differences from Basic Pipeline
+
+While the core analysis classes (PreProcessor, LexicalAnalysis, SemanticAnalysis) remain the same, the multi-file version adds:
+
+- **Automated file discovery** via FileBoi.py
+- **Per-sample processing** via Sample.py
+- **Structured output organization** matching input folder hierarchy
+- **Validation metrics** for quantifying analysis consistency
+- **Bug fixes** not backported to the basic Pipeline
+
+<Warning>
+Make sure you understand how the basic Pipeline works before using the multi-file version. The code is more complicated to enable automation.
+</Warning>
+
+## Expected Folder Structure
+
+The `FileBoi` class expects a specific directory structure relative to the script location:
+
+```
+.
++-- Captures
+|   +-- Make x_0
+|   |   +-- Model y_0
+|   |   |   +-- ModelYear z_0
+|   |   |   |   +-- Samples
+|   |   |   |   |   +-- loggerProgram0.log
+|   |   |   |   |   +-- loggerProgram1.log
+|   +-- Make x_1
+|   |   +-- Model y_1...
++-- Some folder
+|   +-- Pipeline_multi-file
+|   |   +-- Main.py
+|   |   +-- FileBoi.py
+```
+
+<Tip>
+The hierarchy can be simplified. You need at least one parent directory level above the Samples folder. FileBoi will adapt based on the number of directory levels present.
+</Tip>
+
+## FileBoi.py: File Management
+
+FileBoi handles automated discovery and organization of CAN data samples:
+
+```python Pipeline_multi-file/FileBoi.py
+class FileBoi:
+    @staticmethod
+    def go_fetch(kfold_n: int = 5):
+        # Walks the directory tree looking for loggerProgramX.log files
+        script_dir: str = getcwd()
+        chdir("../../")
+        if not path.exists("Captures"):
+            print("Error finding Captures folder.")
+            quit()
+        
+        chdir("Captures")
+        root_dir = getcwd()
+        sample_dict = {}
+        
+        for dirName, subdirList, fileList in walk(root_dir, topdown=True):
+            for file in fileList:
+                # Check if this file matches expected CAN data format
+                m = re.match('loggerProgram[\d]+.log', file)
+                if m:
+                    # Create Sample object with metadata
+                    this_sample = Sample(make=make, model=model, year=year, 
+                                        sample_index=this_sample_index,
+                                        sample_path=dirName + "/" + m.group(0), 
+                                        kfold_n=kfold_n)
+                    sample_dict[(make, model, year)].append(this_sample)
+        
+        return sample_dict
+```
+
+### Key Features
+- **Pattern matching**: Uses regex to find `loggerProgram[\d]+.log` files
+- **Metadata extraction**: Automatically captures make, model, year from folder names
+- **Sample dictionary**: Organizes samples by vehicle (make, model, year) tuple
+
+## Sample.py: Per-File Processing
+
+The `Sample` class encapsulates all processing for a single CAN data file:
+
+```python Pipeline_multi-file/Sample.py
+class Sample:
+    def __init__(self, make: str, model: str, year: str, 
+                 sample_index: str, sample_path: str, kfold_n: int):
+        # Sample Specific Meta-Data
+        self.make = make
+        self.model = model
+        self.year = year
+        self.path = sample_path
+        self.output_vehicle_dir = make + "_" + model + "_" + year
+        self.output_sample_dir = sample_index
+        
+        # Analysis settings
+        self.tang_inversion_bit_dist = 0.2
+        self.use_padding = True
+        self.merge_tokens = True
+        self.max_inter_cluster_dist = 0.20
+        
+        # Validator for train-test split validation
+        self.validator = Validator(use_j1979, kfold_n)
+```
+
+Each Sample instance handles:
+1. Pre-processing and J1979 extraction
+2. Lexical analysis (tokenization and signal generation)
+3. Semantic analysis (correlation and clustering)
+4. Output plotting and file management
+
+## Batch Processing Workflow
+
+The main processing loop in `Main.py` iterates through all discovered samples:
+
+```python Pipeline_multi-file/Main.py
+kfold_n: int = 5
+current_vehicle_number = 0
+
+good_boi = FileBoi()
+samples = good_boi.go_fetch(kfold_n)
+
+for key, sample_list in samples.items():
+    for sample in sample_list:
+        print("\nData import and Pre-Processing for " + sample.output_vehicle_dir)
+        
+        # PRE-PROCESSING
+        id_dict, j1979_dict, pid_dict = sample.pre_process()
+        if j1979_dict:
+            sample.plot_j1979(j1979_dict, vehicle_number=str(current_vehicle_number))
+        
+        # LEXICAL ANALYSIS
+        print("\n\t##### BEGINNING LEXICAL ANALYSIS #####")
+        sample.tokenize_dictionary(id_dict)
+        signal_dict = sample.generate_signals(id_dict, bool(j1979_dict))
+        sample.plot_arb_ids(id_dict, signal_dict, 
+                           vehicle_number=str(current_vehicle_number))
+        
+        # SEMANTIC ANALYSIS
+        print("\n\t##### BEGINNING SEMANTIC ANALYSIS #####")
+        corr_matrix, combined_df = sample.generate_correlation_matrix(signal_dict)
+        if j1979_dict:
+            signal_dict, j1979_correlation = sample.j1979_labeling(
+                j1979_dict, signal_dict, combined_df)
+        cluster_dict, linkage_matrix = sample.cluster_signals(corr_matrix)
+        sample.plot_clusters(cluster_dict, signal_dict, bool(j1979_dict), 
+                            vehicle_number=str(current_vehicle_number))
+        sample.plot_dendrogram(linkage_matrix, 
+                              vehicle_number=str(current_vehicle_number))
+        
+        current_vehicle_number += 1
+```
+
+## Output Organization
+
+Output files are organized to mirror the input structure:
+
+```
+output/
++-- Make_Model_Year/
+|   +-- 0/  (first sample)
+|   |   +-- pickleArbIDs.p
+|   |   +-- pickleSignals.p
+|   |   +-- subset_correlation_matrix.csv
+|   |   +-- cluster_*.png
+|   |   +-- dendrogram_*.png
+|   +-- 1/  (second sample)
+|   |   +-- ...
+```
+
+This structure allows:
+- Easy comparison between samples from the same vehicle
+- Organized storage for large multi-vehicle datasets
+- Parallel processing potential (future enhancement)
+
+## Bug Fixes in Multi-File Version
+
+<Warning>
+Some bugs were fixed in `Pipeline_multi-file` but NOT backported to the basic `Pipeline` folder. Always use the multi-file version for production analysis.
+</Warning>
+
+According to the README:
+> "This folder includes the same classes from Pipeline. However, SOME BUGS WERE FIXED HERE but NOT in the classes saved in Pipeline."
+
+While specific bug fixes aren't enumerated in the source, using the multi-file version ensures you have the most stable implementation.
+
+## Use Cases
+
+### Multi-Vehicle Analysis
+Process CAN data from different vehicle makes/models to compare:
+- Signal extraction consistency across manufacturers
+- Clustering patterns and semantic relationships
+- J1979 standard implementation differences
+
+### Session Comparison
+Analyze multiple driving sessions from the same vehicle:
+- Validate consistency of extracted signals
+- Compare different driving conditions (city vs highway)
+- Identify session-specific vs persistent patterns
+
+### Research and Validation
+Generate datasets for academic research:
+- Train-test validation across samples
+- Quantitative metrics for publication
+- Reproducible results across datasets
+
+## Configuration
+
+Key parameters in `Sample.py` control analysis behavior:
+
+```python
+# Threshold parameters for lexical analysis
+tokenization_bit_distance: float = 0.2
+tokenize_padding: bool = True
+merge_tokens: bool = True
+
+# Threshold parameters for semantic analysis
+subset_selection_size: float = 0.25
+max_intra_cluster_distance: float = 0.20
+min_j1979_correlation: float = 0.85
+```
+
+<Tip>
+These thresholds can be optimized per-vehicle using the Validator's k-fold threshold selection (though this feature is marked as "NOT WORKING?" in the code).
+</Tip>
+
+## Best Practices
+
+1. **Start with basic Pipeline**: Understand single-file processing before batch mode
+2. **Organize input carefully**: Follow the expected folder structure exactly
+3. **Use meaningful names**: Make/Model/Year folders help track results
+4. **Enable pickling**: Set `dump_to_pickle = True` to cache intermediate results
+5. **Review per-sample**: Check outputs for each sample before drawing conclusions
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Validation" icon="check-circle" href="/advanced/validation">
+    Quantify pipeline consistency with train-test validation
+  </Card>
+  <Card title="Time-Series Analysis" icon="chart-line" href="/advanced/time-series-analysis">
+    Perform advanced EDM analysis with R integration
+  </Card>
+</CardGroup>

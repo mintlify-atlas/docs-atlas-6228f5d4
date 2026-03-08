@@ -1,0 +1,285 @@
+---
+title: "Lexical Analysis"
+description: "Tokenization and signal extraction from arbitration ID data"
+---
+
+The `LexicalAnalysis` module provides functions for tokenizing CAN message payloads and generating time-series signals from bit-level patterns.
+
+## Functions
+
+### tokenize_dictionary
+
+```python
+tokenize_dictionary(
+    a_timer: PipelineTimer,
+    d: dict,
+    force: bool = False,
+    include_padding: bool = False,
+    merge: bool = True,
+    max_distance: float = 0.1
+)
+```
+
+Tokenizes all arbitration IDs in a dictionary by identifying contiguous bit sequences that likely represent signals.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="d" type="dict" required>
+  Dictionary mapping arbitration IDs to `ArbID` objects (from PreProcessor)
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, re-tokenize even if tokenization has already been performed
+</ParamField>
+
+<ParamField path="include_padding" type="bool" default="False">
+  If True, include padding bits (with near-zero transition frequency) in tokens
+</ParamField>
+
+<ParamField path="merge" type="bool" default="True">
+  If True, merge adjacent tokens with similar transition frequencies
+</ParamField>
+
+<ParamField path="max_distance" type="float" default="0.1">
+  Maximum TANG distance between adjacent bits for merging (normalized 0-1 scale)
+</ParamField>
+
+**Behavior:**
+- Skips static arbitration IDs (all bits constant)
+- Calls `get_composition()` to identify tokens
+- Optionally calls `merge_tokens()` to combine adjacent tokens
+- Stores tokenization results in each `ArbID` object's `tokenization` attribute
+
+### get_composition
+
+```python
+get_composition(
+    arb_id: ArbID,
+    include_padding: bool = False,
+    max_inversion_distance: float = 0.0
+)
+```
+
+Greedy algorithm to cluster bit positions into tokens representing continuous signals.
+
+<ParamField path="arb_id" type="ArbID" required>
+  The arbitration ID object to tokenize (modified in-place)
+</ParamField>
+
+<ParamField path="include_padding" type="bool" default="False">
+  If True, include padding bits (transition frequency ≤ 0.000001) in clustering
+</ParamField>
+
+<ParamField path="max_inversion_distance" type="float" default="0.0">
+  Maximum allowed inversion in TANG values within a token (0.0 = strictly monotonic)
+</ParamField>
+
+**Algorithm:**
+1. Iterates through TANG (Transition Aggregation N-Gram) bit by bit
+2. Identifies padding bits (transition frequency ≤ 0.000001)
+3. Groups contiguous bits with monotonic transition frequencies
+4. Detects endianness (big-endian vs little-endian) from first two bits
+5. Allows small inversions if `max_inversion_distance` > 0
+6. Stores tokens as tuples `(start_bit_index, end_bit_index)` in `arb_id.tokenization`
+
+**Endianness Detection:**
+- Big-endian: TANG values increase across token
+- Little-endian: TANG values decrease across token
+- Determined from the relationship between the first two bits in each token
+
+### merge_tokens
+
+```python
+merge_tokens(arb_id: ArbID, max_distance: float)
+```
+
+Merges adjacent tokens if their boundary transition frequencies are within a threshold.
+
+<ParamField path="arb_id" type="ArbID" required>
+  The arbitration ID object with tokens to merge (modified in-place)
+</ParamField>
+
+<ParamField path="max_distance" type="float" required>
+  Maximum TANG difference between adjacent token boundaries for merging
+</ParamField>
+
+**Behavior:**
+- Only merges tokens that are adjacent (no gap between them)
+- Compares `abs(tang[token1_end] - tang[token2_start])` to threshold
+- Updates tokenization list by replacing merged tokens
+- Skips static arbitration IDs or those with < 2 tokens
+
+### generate_signals
+
+```python
+generate_signals(
+    a_timer: PipelineTimer,
+    arb_id_dict: dict,
+    signal_pickle_filename: str,
+    normalize_strategy: Callable,
+    force: bool = False
+) -> dict
+```
+
+Generates time-series `Signal` objects from tokenized arbitration IDs.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="arb_id_dict" type="dict" required>
+  Dictionary of tokenized `ArbID` objects
+</ParamField>
+
+<ParamField path="signal_pickle_filename" type="str" required>
+  Path to pickle file for caching signal dictionary
+</ParamField>
+
+<ParamField path="normalize_strategy" type="Callable" required>
+  Normalization function (e.g., `sklearn.preprocessing.minmax_scale`)
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate signals even if pickle file exists
+</ParamField>
+
+<ResponseField name="return" type="dict">
+  Nested dictionary: `{arb_id: {(arb_id, start, stop): Signal, ...}, ...}`
+  
+  Structure:
+  - Outer key: Arbitration ID (int)
+  - Inner key: Tuple `(arb_id, start_bit, stop_bit)`
+  - Value: `Signal` object with normalized time series
+</ResponseField>
+
+**Signal Extraction Process:**
+1. For each token in each non-static arbitration ID:
+   - Extract bit columns from boolean matrix
+   - Convert binary rows to unsigned integers
+   - Create pandas Series with original timestamps
+   - Apply normalization strategy
+   - Calculate signal metadata (Shannon entropy, etc.)
+2. Returns nested dictionary keyed by arbitration ID and signal boundaries
+
+## Usage Example
+
+```python
+from LexicalAnalysis import tokenize_dictionary, generate_signals
+from sklearn.preprocessing import minmax_scale
+from PipelineTimer import PipelineTimer
+
+# Assume id_dictionary is from PreProcessor
+a_timer = PipelineTimer(verbose=True)
+
+# Tokenize all arbitration IDs
+tokenize_dictionary(
+    a_timer,
+    id_dictionary,
+    force=False,
+    include_padding=False,  # Exclude padding bits
+    merge=True,  # Merge adjacent tokens
+    max_distance=0.2  # TANG difference threshold
+)
+
+# Generate signals from tokens
+signal_dictionary = generate_signals(
+    a_timer,
+    id_dictionary,
+    "pickleSignals.p",
+    minmax_scale,  # Normalize to [0, 1]
+    force=False
+)
+
+# Access signals
+for arb_id, signals in signal_dictionary.items():
+    print(f"Arbitration ID {hex(arb_id)}:")
+    for signal_key, signal in signals.items():
+        arb_id, start, stop = signal_key
+        print(f"  Signal [{start}:{stop}], Shannon Index: {signal.shannon_index:.3f}")
+```
+
+## Complete Pipeline Example
+
+```python
+from PreProcessor import PreProcessor
+from LexicalAnalysis import tokenize_dictionary, generate_signals
+from sklearn.preprocessing import minmax_scale
+from PipelineTimer import PipelineTimer
+
+# Initialize
+a_timer = PipelineTimer(verbose=True)
+
+# Step 1: Import and preprocess
+print("##### BEGINNING PREPROCESSING #####")
+pre_processor = PreProcessor(
+    "loggerProgram0.log",
+    "pickleArbIDs.p",
+    "pickleJ1979.p"
+)
+id_dictionary, j1979_dictionary = pre_processor.generate_arb_id_dictionary(
+    a_timer,
+    minmax_scale,
+    time_conversion=1000,
+    freq_analysis_accuracy=1.645,
+    freq_synchronous_threshold=0.1,
+    force=False
+)
+
+# Step 2: Lexical analysis
+print("##### BEGINNING LEXICAL ANALYSIS #####")
+tokenize_dictionary(
+    a_timer,
+    id_dictionary,
+    force=False,
+    include_padding=False,
+    merge=True,
+    max_distance=0.2
+)
+
+signal_dictionary = generate_signals(
+    a_timer,
+    id_dictionary,
+    "pickleSignals.p",
+    minmax_scale,
+    force=False
+)
+
+print(f"Generated {sum(len(sigs) for sigs in signal_dictionary.values())} signals")
+```
+
+## Algorithm Details
+
+### TANG-Based Tokenization
+
+The tokenization algorithm uses the Transition Aggregation N-Gram (TANG) to identify signal boundaries:
+
+1. **TANG Values**: Each bit position has a transition frequency (0.0 to 1.0)
+   - 0.0: Constant/padding bit
+   - 1.0: Bit that changes every message
+   - 0.5: Bit that changes approximately every other message
+
+2. **Clustering Logic**:
+   - Bits with monotonically increasing/decreasing TANG values form a token
+   - Endianness is determined by the direction (increasing = big-endian)
+   - Small inversions are allowed if `max_inversion_distance` > 0
+
+3. **Token Merging**:
+   - Adjacent tokens with similar boundary TANG values are merged
+   - Reduces over-segmentation from noise in TANG
+
+### Binary to Integer Conversion
+
+For each token:
+1. Extract bit columns from boolean matrix
+2. Concatenate bits row-by-row into binary strings
+3. Convert each binary string to unsigned integer
+4. Create time-indexed series preserving original timestamps
+5. Normalize using provided strategy (e.g., min-max scaling)
+
+## Performance Considerations
+
+- **Caching**: Signal generation is cached in pickle files for fast reloading
+- **In-place Modification**: `get_composition()` and `merge_tokens()` modify `ArbID` objects directly
+- **Iteration Tracking**: Timer records per-token processing time for performance analysis

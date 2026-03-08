@@ -1,0 +1,551 @@
+---
+title: "Semantic Analysis"
+description: "Cluster correlated signals and propagate labels using correlation matrices"
+---
+
+## Overview
+
+Semantic analysis is the third stage of the pipeline, responsible for identifying relationships between signals and grouping correlated signals into clusters. This phase uses **Pearson correlation** to measure signal similarity and implements a **greedy clustering algorithm** to group related signals.
+
+The output is a dictionary of signal clusters, where each cluster represents signals that likely measure the same or related physical quantities.
+
+## Key Responsibilities
+
+<Steps>
+  <Step title="Subset Selection">
+    Select top signals by Shannon Index for efficient correlation analysis
+  </Step>
+  <Step title="Correlation Matrix">
+    Calculate Pearson correlation coefficients between all signals in subset
+  </Step>
+  <Step title="Greedy Clustering">
+    Group signals with correlation above threshold into clusters
+  </Step>
+  <Step title="Label Propagation">
+    Extend cluster labels to all signals (not just subset) based on correlation
+  </Step>
+  <Step title="J1979 Labeling">
+    Correlate signals with J1979 diagnostic data to identify known quantities
+  </Step>
+</Steps>
+
+## Why Subset Selection?
+
+Calculating correlation matrices for all signals is computationally expensive (O(n²) where n = number of signals). Subset selection reduces this by:
+
+1. Selecting signals with **highest Shannon Index** (most dynamic/informative)
+2. Calculating correlations only within this subset
+3. Propagating discovered labels back to all signals
+
+### Implementation
+
+From `SemanticAnalysis.py:11-76`:
+
+```python
+def subset_selection(a_timer: PipelineTimer,
+                     signal_dict: dict = None,
+                     subset_pickle: str = "",
+                     force: bool = False,
+                     subset_size: float = 0.25) -> DataFrame:
+    
+    # Count non-static signals
+    signal_index = 0
+    for k_arb_id, arb_id_signals in signal_dict.items():
+        for k_signal_id, signal in arb_id_signals.items():
+            if not signal.static:
+                signal_index += 1
+    
+    # Create DataFrame with signal metadata
+    df: DataFrame = DataFrame(
+        zeros((signal_index, 4)),
+        columns=["arb_id", "start_index", "stop_index", "Shannon_Index"]
+    )
+    
+    # Populate DataFrame
+    for i, (k_arb_id, arb_id_signals) in enumerate(signal_dict.items()):
+        for j, (k_signal_id, signal) in enumerate(arb_id_signals.items()):
+            if not signal.static:
+                df.iloc[signal_index-1] = [
+                    k_arb_id, 
+                    signal.start_index, 
+                    signal.stop_index, 
+                    signal.shannon_index
+                ]
+                signal_index -= 1
+    
+    # Sort by Shannon Index (descending)
+    df.sort_values(by="Shannon_Index", inplace=True, ascending=False)
+    
+    # Select top X% (default 25%)
+    df = df.head(int(round(df.__len__() * subset_size, 0)))
+    
+    # Re-index all signals to share common timestamp index
+    # (uses signal with most samples as reference)
+    # ... [code continues]
+```
+
+<ParamField path="subset_size" type="float" default="0.25">
+  Fraction of signals to include in subset (0.0 to 1.0)
+  
+  - 0.25 = top 25% by Shannon Index
+  - 0.5 = top 50%
+  - 1.0 = all signals (no reduction)
+  
+  Larger subsets are more accurate but slower.
+</ParamField>
+
+<Note>
+  The subset DataFrame re-indexes all signals to a common timestamp index using nearest-neighbor interpolation (`method='nearest'`).
+</Note>
+
+## Correlation Matrix Generation
+
+The `subset_correlation()` function (`SemanticAnalysis.py:79-89`) calculates Pearson correlation coefficients.
+
+```python
+def subset_correlation(subset: DataFrame,
+                       csv_correlation_filename: str,
+                       force: bool = False) -> DataFrame:
+    if not force and path.isfile(csv_correlation_filename):
+        # Load cached correlation matrix
+        return read_csv(csv_correlation_filename, index_col=0).rename(
+            index=literal_eval, columns=literal_eval
+        )
+    else:
+        # Calculate Pearson correlation
+        return subset.corr()
+```
+
+### Correlation Matrix Structure
+
+```
+                     (123, 0, 7)  (123, 8, 15)  (456, 0, 15)  ...
+(123, 0, 7)              1.00          0.12          -0.05    ...
+(123, 8, 15)             0.12          1.00           0.87    ...
+(456, 0, 15)            -0.05          0.87           1.00    ...
+...
+```
+
+**Rows/Columns**: Signal IDs as tuples `(arb_id, start_bit, stop_bit)`  
+**Values**: Pearson correlation coefficient (-1.0 to 1.0)
+
+<Info>
+  Pearson correlation measures **linear relationship** strength. A value of 0.85 means the signals move together 85% of the time in a linear fashion.
+</Info>
+
+## Greedy Signal Clustering
+
+The `greedy_signal_clustering()` function (`SemanticAnalysis.py:92-174`) implements a greedy algorithm to group correlated signals.
+
+### Algorithm Logic
+
+```python
+def greedy_signal_clustering(correlation_matrix: DataFrame = None,
+                             correlation_threshold: float = 0.8,
+                             fuzzy_labeling: bool = True) -> dict:
+    
+    correlation_keys = correlation_matrix.columns.values
+    previously_clustered_signals = {}  # signal_id → cluster_id(s)
+    cluster_dict = {}                  # cluster_id → [signal_ids]
+    new_cluster_label = 0
+    
+    for n, row in enumerate(correlation_keys):
+        for m, col in enumerate(correlation_keys):
+            if n == m:
+                continue  # Skip diagonal
+            
+            result = round(correlation_matrix.iloc[n, m], 2)
+            
+            # Check if correlation exceeds threshold
+            if result >= correlation_threshold:
+                # Case 1: Both signals unlabeled → Create new cluster
+                if row not in previously_clustered_signals and \
+                   col not in previously_clustered_signals:
+                    cluster_dict[new_cluster_label] = [row, col]
+                    previously_clustered_signals[row] = {new_cluster_label}
+                    previously_clustered_signals[col] = {new_cluster_label}
+                    new_cluster_label += 1
+                
+                # Case 2: Row unlabeled, col labeled → Add row to col's clusters
+                elif row not in previously_clustered_signals:
+                    for label in previously_clustered_signals[col]:
+                        cluster_dict[label].append(row)
+                    previously_clustered_signals[row] = previously_clustered_signals[col]
+                
+                # Case 3: Col unlabeled, row labeled → Add col to row's clusters
+                elif col not in previously_clustered_signals:
+                    for label in previously_clustered_signals[row]:
+                        cluster_dict[label].append(col)
+                    previously_clustered_signals[col] = previously_clustered_signals[row]
+                
+                # Case 4: Both labeled (fuzzy labeling mode)
+                else:
+                    if fuzzy_labeling:
+                        row_label_set = previously_clustered_signals[row]
+                        col_label_set = previously_clustered_signals[col]
+                        if not row_label_set & col_label_set:  # No overlap
+                            # Create bridge cluster
+                            cluster_dict[new_cluster_label] = [row, col]
+                            previously_clustered_signals[row] = {new_cluster_label} | row_label_set
+                            previously_clustered_signals[col] = {new_cluster_label} | col_label_set
+                            new_cluster_label += 1
+    
+    # Remove duplicate clusters
+    # ... [deduplication logic]
+    
+    return cluster_dict
+```
+
+### Clustering Behavior
+
+<CodeGroup>
+```python Example 1: Simple Clustering
+# Correlation matrix:
+#       A     B     C
+# A   1.00  0.90  0.10
+# B   0.90  1.00  0.15
+# C   0.10  0.15  1.00
+
+# With threshold = 0.8:
+# A ↔ B correlation = 0.90 → Create cluster 0: [A, B]
+# C has no high correlations → Not clustered
+
+cluster_dict = {
+    0: [A, B]
+}
+```
+
+```python Example 2: Fuzzy Labeling
+# Correlation matrix:
+#       A     B     C     D
+# A   1.00  0.90  0.10  0.85
+# B   0.90  1.00  0.88  0.10
+# C   0.10  0.88  1.00  0.10
+# D   0.85  0.10  0.10  1.00
+
+# With threshold = 0.8, fuzzy_labeling = True:
+# A ↔ B = 0.90 → Cluster 0: [A, B]
+# B ↔ C = 0.88 → Cluster 1: [B, C]
+# A ↔ D = 0.85 → Cluster 2: [A, D]
+
+# Fuzzy labeling allows signals to belong to multiple clusters:
+cluster_dict = {
+    0: [A, B],
+    1: [B, C],  
+    2: [A, D]
+}
+```
+</CodeGroup>
+
+<ParamField path="correlation_threshold" type="float" default="0.85">
+  Minimum Pearson correlation coefficient for two signals to be clustered
+  
+  - 0.7 = Loose clustering (more clusters, larger)
+  - 0.85 = Moderate clustering (default)
+  - 0.95 = Strict clustering (fewer clusters, smaller)
+</ParamField>
+
+<ParamField path="fuzzy_labeling" type="bool" default="true">
+  Whether signals can belong to multiple clusters
+  
+  - `true`: Signals can be in multiple clusters (represents complex relationships)
+  - `false`: Each signal belongs to at most one cluster
+</ParamField>
+
+<Tip>
+  Fuzzy labeling is useful when signals have multiple physical interpretations. For example, engine RPM might correlate with both vehicle speed AND throttle position.
+</Tip>
+
+## Label Propagation
+
+The `label_propagation()` function (`SemanticAnalysis.py:181-274`) extends cluster labels from the subset to **all signals**.
+
+### Why Label Propagation?
+
+- Subset clustering only analyzes top 25% of signals
+- Remaining 75% may also correlate with clustered signals
+- Label propagation assigns cluster labels to all correlated signals
+
+### Implementation
+
+```python
+def label_propagation(a_timer: PipelineTimer,
+                      pickle_clusters_filename: str = '',
+                      pickle_all_signals_df_filename: str = '',
+                      csv_signals_correlation_filename: str = '',
+                      signal_dict: dict = None,
+                      cluster_dict: dict = None,
+                      correlation_threshold: float = 0.8,
+                      force: bool = False):
+    
+    # Create DataFrame with ALL non-static signals
+    non_static_signals_dict = {}
+    for k_arb_id, arb_id_signals in signal_dict.items():
+        for k_signal_id, signal in arb_id_signals.items():
+            if not signal.static:
+                non_static_signals_dict[k_signal_id] = signal
+    
+    # Re-index to common timestamp index
+    df: DataFrame = DataFrame(...)  # [similar to subset_selection]
+    
+    # Calculate correlation matrix for ALL signals
+    correlation_matrix = df.corr()
+    
+    # Initialize with existing cluster assignments
+    previously_clustered_signals = {}
+    for k_cluster_id, cluster in cluster_dict.items():
+        for k_signal_id in cluster:
+            previously_clustered_signals[k_signal_id] = k_cluster_id
+    
+    # Propagate labels to unclustered signals
+    for n, row in enumerate(correlation_keys):
+        for m, col in enumerate(correlation_keys):
+            if n == m:
+                continue
+            
+            result = round(correlation_matrix.iloc[n, m], 2)
+            
+            if result >= correlation_threshold:
+                # If row is clustered but col is not, add col to row's cluster
+                if row in previously_clustered_signals and \
+                   col not in previously_clustered_signals:
+                    cluster_dict[previously_clustered_signals[row]].append(col)
+                    previously_clustered_signals[col] = previously_clustered_signals[row]
+                
+                # If col is clustered but row is not, add row to col's cluster  
+                elif col in previously_clustered_signals and \
+                     row not in previously_clustered_signals:
+                    cluster_dict[previously_clustered_signals[col]].append(row)
+                    previously_clustered_signals[row] = previously_clustered_signals[col]
+    
+    return df, correlation_matrix, cluster_dict
+```
+
+<Warning>
+  Label propagation creates a correlation matrix for **all signals**, which can be memory-intensive for large datasets. Consider increasing subset size if propagation discovers few new labels.
+</Warning>
+
+## J1979 Signal Labeling
+
+The `j1979_signal_labeling()` function (`SemanticAnalysis.py:277-334`) correlates CAN signals with J1979 diagnostic data to automatically identify known quantities.
+
+### Process
+
+```python
+def j1979_signal_labeling(a_timer: PipelineTimer,
+                          j1979_corr_filename: str = "",
+                          df_signals: DataFrame = None,
+                          j1979_dict: dict = None,
+                          signal_dict: dict = None,
+                          correlation_threshold: float = 0.8,
+                          force: bool = False):
+    
+    # Create DataFrame with J1979 signals
+    df_j1979: DataFrame = DataFrame(...)
+    for pid, pid_data in j1979_dict.items():
+        df_j1979[pid_data.title] = pid_data.data.reindex(
+            index=df_signals.index, 
+            method='nearest'
+        )
+    
+    # Combine CAN signals and J1979 data
+    df_combined = concat([df_signals, df_j1979], axis=1)
+    
+    # Calculate correlation matrix
+    correlation_matrix = df_combined.corr()
+    
+    # Identify strongest J1979 correlation for each signal
+    for index, row in correlation_matrix[j1979_columns][:-len(j1979_columns)].iterrows():
+        row = abs(row)  # Use absolute correlation
+        max_index = row.idxmax(axis=1, skipna=True)
+        
+        if row[max_index] >= correlation_threshold:
+            signal = signal_dict[index[0]][index]
+            signal.j1979_title = max_index
+            signal.j1979_pcc = row[max_index]
+```
+
+### Example Output
+
+```python
+# Signal from Arb ID 0x123, bits 16-23
+signal.j1979_title = "Engine RPM"
+signal.j1979_pcc = 0.94
+
+# Interpretation: This signal has 94% correlation with J1979 Engine RPM
+# It likely represents engine speed encoded in the CAN payload
+```
+
+<Note>
+  J1979 labeling uses **absolute correlation** (`abs(row)`) to catch both positive and negative relationships. Some signals may be inversely correlated with J1979 data.
+</Note>
+
+## Configuration Parameters
+
+From `Main.py:74-77`:
+
+<ParamField path="subset_selection_size" type="float" default="0.25">
+  Fraction of signals to include in initial clustering (0.0 to 1.0)
+</ParamField>
+
+<ParamField path="fuzzy_labeling" type="bool" default="true">
+  Allow signals to belong to multiple clusters
+</ParamField>
+
+<ParamField path="min_correlation_threshold" type="float" default="0.85">
+  Minimum Pearson correlation for clustering and labeling
+  
+  Applied to:
+  - Subset clustering
+  - Label propagation
+  - J1979 labeling
+</ParamField>
+
+<ParamField path="force" type="bool" default="false">
+  Regenerate correlation matrices and clusters from scratch
+</ParamField>
+
+## Usage Example
+
+From `Main.py:112-139`:
+
+```python
+from SemanticAnalysis import (
+    subset_selection,
+    subset_correlation,
+    greedy_signal_clustering,
+    label_propagation,
+    j1979_signal_labeling
+)
+
+# Configuration
+subset_selection_size = 0.25
+fuzzy_labeling = True
+min_correlation_threshold = 0.85
+
+# Step 1: Select subset by Shannon Index
+subset_df = subset_selection(
+    a_timer,
+    signal_dictionary,
+    "pickleSubset.p",
+    force=False,
+    subset_size=subset_selection_size
+)
+
+# Step 2: Calculate correlation matrix for subset
+corr_matrix_subset = subset_correlation(
+    subset_df,
+    "subset_correlation_matrix.csv",
+    force=False
+)
+
+# Step 3: Cluster subset signals
+cluster_dict = greedy_signal_clustering(
+    corr_matrix_subset,
+    correlation_threshold=min_correlation_threshold,
+    fuzzy_labeling=fuzzy_labeling
+)
+
+# Step 4: Propagate labels to all signals
+df_full, corr_matrix_full, cluster_dict = label_propagation(
+    a_timer,
+    pickle_clusters_filename="pickleClusters.p",
+    pickle_all_signals_df_filename="pickleAllSignalsDataFrame.p",
+    csv_signals_correlation_filename="complete_correlation_matrix.csv",
+    signal_dict=signal_dictionary,
+    cluster_dict=cluster_dict,
+    correlation_threshold=min_correlation_threshold,
+    force=False
+)
+
+# Step 5: Label signals with J1979 data
+signal_dictionary, j1979_correlations = j1979_signal_labeling(
+    a_timer=a_timer,
+    j1979_corr_filename="pickleJ1979_correlation.p",
+    df_signals=df_full,
+    j1979_dict=j1979_dictionary,
+    signal_dict=signal_dictionary,
+    correlation_threshold=min_correlation_threshold,
+    force=False
+)
+```
+
+## Output Data Structure
+
+### Cluster Dictionary
+
+```python
+{
+    0: [(123, 0, 7), (123, 8, 15), (456, 16, 23)],
+    1: [(789, 0, 15), (789, 16, 31)],
+    2: [(123, 24, 31)],
+    ...
+}
+```
+
+**Key**: Cluster ID (int)  
+**Value**: List of signal IDs as tuples `(arb_id, start_bit, stop_bit)`
+
+### Updated Signal Objects
+
+After J1979 labeling, `Signal` objects may have:
+
+```python
+signal.j1979_title = "Engine RPM"       # Human-readable label
+signal.j1979_pcc = 0.94                 # Pearson correlation coefficient
+```
+
+## Performance Optimization
+
+<Steps>
+  <Step title="Use Smaller Subsets">
+    Reduce `subset_selection_size` from 0.25 to 0.15 for faster clustering
+  </Step>
+  <Step title="Skip Label Propagation">
+    If you only need clustered subset, skip `label_propagation()` entirely
+  </Step>
+  <Step title="Cache Correlation Matrices">
+    Keep `.csv` files to avoid recalculating correlations (set `force=False`)
+  </Step>
+  <Step title="Disable Fuzzy Labeling">
+    Set `fuzzy_labeling=False` for faster clustering with simpler output
+  </Step>
+</Steps>
+
+## Debugging Tips
+
+### Inspect Cluster Contents
+
+```python
+for cluster_id, signal_ids in cluster_dict.items():
+    print(f"\nCluster {cluster_id}:")
+    for signal_id in signal_ids:
+        signal = signal_dict[signal_id[0]][signal_id]
+        print(f"  {signal.plot_title}")
+        if signal.j1979_title:
+            print(f"    → {signal.j1979_title} (PCC: {signal.j1979_pcc:.2f})")
+```
+
+### Check Correlation Values
+
+```python
+# Find highest correlations for a specific signal
+signal_id = (123, 0, 7)
+correlations = corr_matrix_full.loc[signal_id].sort_values(ascending=False)
+print(correlations.head(10))
+```
+
+### Verify J1979 Labeling
+
+```python
+for arb_id, signals in signal_dict.items():
+    for signal_id, signal in signals.items():
+        if signal.j1979_title:
+            print(f"{signal.plot_title} → {signal.j1979_title} (r={signal.j1979_pcc:.2f})")
+```
+
+## See Also
+
+- [Lexical Analysis](/pipeline/lexical-analysis) - Previous stage: tokenization
+- [Visualization](/pipeline/visualization) - Next stage: plotting clusters
+- [Signal Class](/api/signal) - Signal object reference

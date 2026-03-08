@@ -1,0 +1,473 @@
+---
+title: "Visualization"
+description: "Generate publication-quality plots of signals, clusters, and J1979 data"
+---
+
+## Overview
+
+The visualization phase generates matplotlib figures to help analyze and present CAN reverse engineering results. The `Plotter` module provides three main plotting functions:
+
+1. **J1979 plots**: Diagnostic signal time series
+2. **Arbitration ID plots**: All signals from a single Arb ID with TANG
+3. **Cluster plots**: Correlated signals grouped together
+
+## Key Features
+
+- Publication-ready output (configurable DPI, format, transparency)
+- Automatic subplot layout based on signal count
+- TANG visualization with padding bit differentiation
+- J1979 labels overlaid on cluster plots
+- Batch generation with progress tracking
+
+## Configuration
+
+Global settings are defined at the top of `Plotter.py:9-16`:
+
+```python
+figure_format:  str = "png"   # Output file format (png, eps, pdf, svg)
+figure_dpi:     int = 300     # Resolution in dots per inch
+figure_transp:  bool = False  # Transparent background
+
+arb_id_folder:  str = 'figures'   # Output folder for Arb ID plots
+cluster_folder: str = 'clusters'  # Output folder for cluster plots  
+j1979_folder:   str = 'j1979'     # Output folder for J1979 plots
+```
+
+<ParamField path="figure_format" type="str" default="png">
+  Output file format
+  
+  - `"png"`: Best for quick previews and drafts
+  - `"eps"`: Preferred by journals/conferences for camera-ready copies
+  - `"pdf"`: Vector format for LaTeX documents
+  - `"svg"`: Scalable vector graphics
+</ParamField>
+
+<ParamField path="figure_dpi" type="int" default="300">
+  Resolution in dots per inch
+  
+  - 72-150: Screen viewing
+  - 300: Standard print quality
+  - 600+: High-quality publications
+</ParamField>
+
+<ParamField path="figure_transp" type="bool" default="false">
+  Whether to use transparent background (useful for presentations)
+</ParamField>
+
+## J1979 Plotting
+
+The `plot_j1979()` function (`Plotter.py:171-225`) generates a single multi-panel figure with all J1979 diagnostic signals.
+
+### Implementation
+
+```python
+from Plotter import plot_j1979
+
+plot_j1979(a_timer, j1979_dictionary, force=False)
+```
+
+### Output Structure
+
+```
+j1979/
+  └── j1979.png    # Single figure with all PIDs
+```
+
+### Figure Layout
+
+```python
+for i, (pid, data) in enumerate(j1979_dict.items()):
+    ax = axes[i, 0]
+    ax.set_title(f"PID {hex(pid)}: {data.title}",
+                 style='italic',
+                 size='medium')
+    ax.set_xlim([data.data.first_valid_index(), 
+                 data.data.last_valid_index()])
+    ax.plot(data.data, color='black')
+```
+
+**Output includes:**
+- One subplot per J1979 PID
+- PID number (hex) + human-readable title
+- Time series in black
+- Auto-scaled axes
+
+<Info>
+  J1979 plots are only generated if diagnostic data was captured during the CAN log session (Arb ID 0x7E8 present).
+</Info>
+
+## Arbitration ID Plotting
+
+The `plot_signals_by_arb_id()` function (`Plotter.py:19-99`) generates one figure per Arbitration ID, showing:
+
+- All extracted signals (one subplot each)
+- TANG values at the bottom
+- Vertical dashed lines marking token boundaries
+
+### Implementation
+
+```python
+from Plotter import plot_signals_by_arb_id
+
+plot_signals_by_arb_id(
+    a_timer, 
+    arb_id_dict, 
+    signal_dict, 
+    force=False
+)
+```
+
+### Output Structure
+
+```
+figures/
+  ├── 0x123.png
+  ├── 0x456.png
+  ├── 0x789.png
+  └── ...
+```
+
+### Figure Layout
+
+From `Plotter.py:35-78`:
+
+```python
+for k_id, signals in signal_dict.items():
+    arb_id = arb_id_dict[k_id]
+    if not arb_id.static:
+        # Collect non-static signals
+        signals_to_plot = [s for s in signals.values() if not s.static]
+        
+        # One row per signal + one for TANG
+        fig, axes = plt.subplots(nrows=1 + len(signals_to_plot), ncols=1)
+        
+        plt.suptitle(f"Time Series and TANG for Arbitration ID {hex(k_id)}",
+                     weight='bold',
+                     position=(0.5, 1))
+        
+        fig.set_size_inches(8, (1 + len(signals_to_plot) + 1) * 1.3)
+        
+        # Plot each signal
+        for i, signal in enumerate(signals_to_plot):
+            ax = axes[i]
+            ax.set_title(signal.plot_title, style='italic', size='medium')
+            ax.set_xlim([signal.time_series.first_valid_index(),
+                         signal.time_series.last_valid_index()])
+            ax.plot(signal.time_series, color='black')
+            
+            # Add vertical line to TANG plot at token boundary
+            axes[-1].axvline(x=signal.start_index, alpha=0.25, 
+                           c='black', linestyle='dashed')
+        
+        # Plot TANG at bottom
+        ax = axes[-1]
+        ax.set_title("Min-Max Normalized Transition Aggregation N-Gram (TANG)",
+                     style='italic', size='medium')
+        tang_bit_width = arb_id.tang.shape[0]
+        ax.set_xlim([-0.01 * tang_bit_width, 1.005 * tang_bit_width])
+        
+        y = arb_id.tang[:]
+        ix = isin(y, 0)
+        pad_bit = where(ix)
+        non_pad_bit = where(~ix)
+        
+        # Black circles for non-zero TANG, grey triangles for padding
+        ax.scatter(non_pad_bit, y[non_pad_bit], color='black', marker='o', s=10)
+        ax.scatter(pad_bit, y[pad_bit], color='grey', marker='^', s=10)
+        
+        savefig(f"{hex(arb_id.id)}.{figure_format}",
+                bbox_iches='tight',
+                pad_inches=0.0,
+                dpi=figure_dpi,
+                format=figure_format,
+                transparent=figure_transp)
+```
+
+### Example Output
+
+```
+Time Series and TANG for Arbitration ID 0x123
+┌──────────────────────────────────────────────┐
+│ Bits 0-7 of Arb ID 0x123                    │ ← Signal 1
+│ [time series plot]                           │
+├──────────────────────────────────────────────┤
+│ Bits 8-15 of Arb ID 0x123                   │ ← Signal 2
+│ [time series plot]                           │
+├──────────────────────────────────────────────┤
+│ TANG (with token boundaries marked)          │ ← TANG plot
+│ ● ● ● ▲ ▲ ● ● ●                              │
+└──────────────────────────────────────────────┘
+```
+
+<Note>
+  **TANG Legend:**
+  - ● Black circle = Non-zero TANG (dynamic bit)
+  - ▲ Grey triangle = Zero TANG (padding bit)
+  - | Dashed vertical line = Token boundary
+</Note>
+
+## Cluster Plotting
+
+The `plot_signals_by_cluster()` function (`Plotter.py:102-168`) generates one figure per cluster.
+
+### Implementation
+
+```python
+from Plotter import plot_signals_by_cluster
+
+plot_signals_by_cluster(
+    a_timer,
+    cluster_dict,
+    signal_dict,
+    use_j1979_tags=True,
+    force=False
+)
+```
+
+<ParamField path="use_j1979_tags" type="bool" default="true">
+  Whether to include J1979 labels in subplot titles
+  
+  - `true`: Shows "Bits X-Y of Arb ID 0xZZZ [Engine RPM (PCC:0.94)]"
+  - `false`: Shows "Bits X-Y of Arb ID 0xZZZ" only
+</ParamField>
+
+### Output Structure
+
+```
+clusters/
+  ├── cluster_0.png
+  ├── cluster_1.png
+  ├── cluster_2.png
+  └── ...
+```
+
+### Figure Layout
+
+From `Plotter.py:117-147`:
+
+```python
+for cluster_number, list_of_signals in cluster_dict.items():
+    # Setup plot with one row per signal
+    fig, axes = plt.subplots(nrows=len(list_of_signals), ncols=1, squeeze=False)
+    
+    plt.suptitle(f"Cluster Number {cluster_number}",
+                 weight='bold',
+                 position=(0.5, 1))
+    
+    fig.set_size_inches(8, (1 + len(list_of_signals) + 1) * 1.3)
+    
+    # Plot each signal in cluster
+    for i, signal_key in enumerate(list_of_signals):
+        signal = signal_dict[signal_key[0]][signal_key]
+        ax = axes[i, 0]
+        
+        # Build title with optional J1979 label
+        if signal.j1979_title and use_j1979_tags:
+            this_title = f"{signal.plot_title} [{signal.j1979_title} " \
+                        f"(PCC:{round(signal.j1979_pcc, 2)})]"
+        else:
+            this_title = signal.plot_title
+        
+        ax.set_title(this_title, style='italic', size='medium')
+        ax.set_xlim([signal.time_series.first_valid_index(),
+                     signal.time_series.last_valid_index()])
+        ax.plot(signal.time_series, color='black')
+    
+    savefig(f"cluster_{cluster_number}.{figure_format}",
+            bbox_iches='tight',
+            pad_inches=0.0,
+            dpi=figure_dpi,
+            format=figure_format,
+            transparent=figure_transp)
+```
+
+### Example Output
+
+```
+Cluster Number 3
+┌──────────────────────────────────────────────────────────────┐
+│ Bits 16-23 of Arb ID 0x123 [Engine RPM (PCC:0.94)]         │
+│ [time series plot - highly correlated signals]              │
+├──────────────────────────────────────────────────────────────┤
+│ Bits 0-15 of Arb ID 0x456 [Engine RPM (PCC:0.89)]          │
+│ [time series plot - similar pattern to above]               │
+├──────────────────────────────────────────────────────────────┤
+│ Bits 8-15 of Arb ID 0x789                                   │
+│ [time series plot - no J1979 match but correlated]          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+<Tip>
+  Cluster plots are ideal for validating that the correlation algorithm correctly grouped related signals. You should see visually similar waveforms within each cluster.
+</Tip>
+
+## Usage Example
+
+From `Main.py:92-139`:
+
+```python
+from Plotter import plot_j1979, plot_signals_by_arb_id, plot_signals_by_cluster
+from PipelineTimer import PipelineTimer
+
+a_timer = PipelineTimer(verbose=True)
+
+# Configuration flags
+force_j1979_plotting = False
+force_arb_id_plotting = True
+force_cluster_plotting = False
+use_j1979_tags_in_plots = True
+
+# Plot J1979 diagnostic data (if available)
+if j1979_dictionary:
+    plot_j1979(a_timer, j1979_dictionary, force_j1979_plotting)
+
+# Plot all signals organized by Arbitration ID
+plot_signals_by_arb_id(
+    a_timer,
+    id_dictionary,
+    signal_dictionary,
+    force_arb_id_plotting
+)
+
+# Plot clustered signals
+plot_signals_by_cluster(
+    a_timer,
+    cluster_dict,
+    signal_dictionary,
+    use_j1979_tags_in_plots,
+    force_cluster_plotting
+)
+```
+
+<Warning>
+  Plotting can generate hundreds of files for large datasets. Set `force=False` to skip regeneration if figures already exist.
+</Warning>
+
+## Customization Options
+
+### Change Figure Size
+
+```python
+# In Plotter.py, modify the set_size_inches call:
+fig.set_size_inches(10, (1 + len(signals_to_plot) + 1) * 2.0)  # Wider, taller
+```
+
+### Change Colors
+
+```python
+# Plot signals in blue instead of black:
+ax.plot(signal.time_series, color='blue')
+
+# Use color map for multiple signals:
+colors = plt.cm.viridis(np.linspace(0, 1, len(signals_to_plot)))
+for i, signal in enumerate(signals_to_plot):
+    ax.plot(signal.time_series, color=colors[i])
+```
+
+### Add Grid Lines
+
+```python
+ax.plot(signal.time_series, color='black')
+ax.grid(True, alpha=0.3, linestyle='--')
+```
+
+### Change Title Font
+
+```python
+ax.set_title(
+    signal.plot_title,
+    style='italic',
+    size='large',        # Changed from 'medium'
+    fontfamily='serif'   # Added font family
+)
+```
+
+## Output File Naming
+
+| Function                    | Filename Pattern         | Example              |
+|---------------------------- |------------------------- |--------------------- |
+| `plot_j1979()`             | `j1979.{format}`         | `j1979.png`          |
+| `plot_signals_by_arb_id()` | `{hex(arb_id)}.{format}` | `0x123.png`          |
+| `plot_signals_by_cluster()` | `cluster_{id}.{format}`  | `cluster_5.png`      |
+
+## Advanced: Programmatic Access
+
+You can access the matplotlib figure objects directly for custom processing:
+
+```python
+import matplotlib.pyplot as plt
+
+# Instead of savefig, store the figure
+figs = []
+
+for cluster_number, list_of_signals in cluster_dict.items():
+    fig, axes = plt.subplots(nrows=len(list_of_signals), ncols=1)
+    # ... [plotting code]
+    figs.append((cluster_number, fig))
+
+# Later: Save with custom processing
+for cluster_number, fig in figs:
+    # Add watermark
+    fig.text(0.5, 0.01, 'Confidential', ha='center', alpha=0.3)
+    
+    # Save with custom filename
+    fig.savefig(f'cluster_{cluster_number}_processed.png', dpi=600)
+```
+
+## Performance Tips
+
+<Steps>
+  <Step title="Reduce DPI for Drafts">
+    Set `figure_dpi = 150` for faster generation during development
+  </Step>
+  <Step title="Use PNG Format">
+    PNG is much faster than EPS or PDF for quick previews
+  </Step>
+  <Step title="Limit Cluster Plotting">
+    Only plot specific clusters by filtering `cluster_dict`
+  </Step>
+  <Step title="Close Figures">
+    The code calls `plt.close(fig)` after each save to free memory
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### "UserWarning: Tight layout not applied"
+
+This occurs when subplots overlap. Increase figure height:
+
+```python
+fig.set_size_inches(8, (1 + len(signals_to_plot) + 1) * 1.5)  # Increased from 1.3
+```
+
+### Empty TANG Plot
+
+If the TANG subplot is blank, check:
+
+1. Is the Arbitration ID marked as `static=True`?
+2. Are all TANG values zero (all padding bits)?
+
+```python
+if arb_id.static:
+    print(f"Arb ID {hex(arb_id.id)} is static, skipping plot")
+```
+
+### Missing J1979 Labels
+
+Ensure you ran `j1979_signal_labeling()` before plotting:
+
+```python
+signal_dictionary, j1979_correlations = j1979_signal_labeling(
+    a_timer, ...
+)
+
+# Then plot with labels enabled
+plot_signals_by_cluster(..., use_j1979_tags=True, ...)
+```
+
+## See Also
+
+- [Semantic Analysis](/pipeline/semantic-analysis) - Previous stage: clustering
+- [Preprocessing](/pipeline/preprocessing) - TANG calculation reference
+- [API Reference](/api/plotter) - Plotter module documentation

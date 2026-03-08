@@ -1,0 +1,194 @@
+---
+title: "PreProcessor"
+description: "Data import and preprocessing for CAN traffic logs"
+---
+
+The `PreProcessor` class handles the import of CAN data from CSV/TSV files and generates dictionaries of `ArbID` and `J1979` objects for pipeline processing.
+
+## Class: PreProcessor
+
+### Constructor
+
+```python
+PreProcessor(data_filename: str, id_output_filename: str, j1979_output_filename: str)
+```
+
+Initializes a new PreProcessor instance with input and output file paths.
+
+<ParamField path="data_filename" type="str" required>
+  Path to the CAN data file (CSV/TSV format with timestamp, arbitration ID, DLC, and data bytes)
+</ParamField>
+
+<ParamField path="id_output_filename" type="str" required>
+  Path for pickled arbitration ID dictionary output
+</ParamField>
+
+<ParamField path="j1979_output_filename" type="str" required>
+  Path for pickled J1979 dictionary output
+</ParamField>
+
+**Attributes:**
+- `data: DataFrame` - Imported CAN data
+- `import_time: float` - Time taken for CSV import
+- `dictionary_time: float` - Time taken for dictionary generation
+- `total_time: float` - Total processing time
+
+### Methods
+
+#### import_csv
+
+```python
+import_csv(a_timer: PipelineTimer, filename: str)
+```
+
+Imports CAN data from a CSV file into a pandas DataFrame with automatic type conversion.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="filename" type="str" required>
+  Path to the CSV file to import
+</ParamField>
+
+**Behavior:**
+- Skips first 7 header rows
+- Converts hexadecimal strings to integers for ID and data bytes
+- Converts timestamp format (removes trailing characters)
+- Sets time as the DataFrame index
+- Handles malformed timestamps gracefully
+
+**CSV Format Expected:**
+```
+time    id    dlc   b0   b1   b2   b3   b4   b5   b6   b7
+```
+
+#### generate_j1979_dictionary
+
+```python
+@staticmethod
+generate_j1979_dictionary(j1979_data: DataFrame) -> dict
+```
+
+Generates a dictionary of J1979 diagnostic PIDs from response data.
+
+<ParamField path="j1979_data" type="DataFrame" required>
+  DataFrame containing J1979 response messages (from arbitration ID 0x7E8/2024)
+</ParamField>
+
+<ResponseField name="return" type="dict">
+  Dictionary mapping PID values (from byte 2) to `J1979` objects
+</ResponseField>
+
+**Note:** This method groups J1979 responses by the PID in byte 2 (b2 column).
+
+#### generate_arb_id_dictionary
+
+```python
+generate_arb_id_dictionary(
+    a_timer: PipelineTimer,
+    normalize_strategy: Callable,
+    time_conversion: int = 1000,
+    freq_analysis_accuracy: float = 0.0,
+    freq_synchronous_threshold: float = 0.0,
+    force: bool = False
+) -> (dict, dict)
+```
+
+Generates dictionaries of arbitration IDs and J1979 PIDs from the CAN data.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="normalize_strategy" type="Callable" required>
+  Normalization function to apply to TANG values (e.g., `sklearn.preprocessing.minmax_scale`)
+</ParamField>
+
+<ParamField path="time_conversion" type="int" default="1000">
+  Multiplier to convert time units (e.g., 1000 for seconds to milliseconds)
+</ParamField>
+
+<ParamField path="freq_analysis_accuracy" type="float" default="0.0">
+  Z-score for confidence interval in frequency analysis (e.g., 1.645 for 90% confidence)
+</ParamField>
+
+<ParamField path="freq_synchronous_threshold" type="float" default="0.0">
+  Threshold for determining if signals are synchronous (in time units after conversion)
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate dictionaries even if pickled files exist
+</ParamField>
+
+<ResponseField name="return" type="tuple[dict, dict]">
+  Tuple containing:
+  - `id_dictionary`: Dictionary mapping arbitration IDs to `ArbID` objects
+  - `j1979_dictionary`: Dictionary mapping PIDs to `J1979` objects
+</ResponseField>
+
+**Behavior:**
+- Checks for existing pickled files and loads them if `force=False`
+- Imports CSV data if needed
+- Filters out specific IDs:
+  - `0x7DF` (2015): J1979 requests - ignored
+  - `0x7E8` (2024): J1979 responses - processed separately
+- Validates each arbitration ID:
+  - Skips IDs with variable DLC
+  - Removes padding bytes beyond DLC length
+  - Corrects duplicate timestamps
+- Generates binary matrices and TANG for each ID
+- Analyzes transmission frequencies
+
+## Usage Example
+
+```python
+from PreProcessor import PreProcessor
+from sklearn.preprocessing import minmax_scale
+from PipelineTimer import PipelineTimer
+
+# Initialize timer
+a_timer = PipelineTimer(verbose=True)
+
+# File paths
+can_data_filename = "loggerProgram0.log"
+pickle_arb_id_filename = "pickleArbIDs.p"
+pickle_j1979_filename = "pickleJ1979.p"
+
+# Create preprocessor
+pre_processor = PreProcessor(
+    can_data_filename,
+    pickle_arb_id_filename,
+    pickle_j1979_filename
+)
+
+# Generate dictionaries
+id_dictionary, j1979_dictionary = pre_processor.generate_arb_id_dictionary(
+    a_timer,
+    minmax_scale,  # Normalization strategy
+    time_conversion=1000,  # Convert seconds to milliseconds
+    freq_analysis_accuracy=1.645,  # 90% confidence (z=1.645)
+    freq_synchronous_threshold=0.1,
+    force=False  # Use cached data if available
+)
+
+print(f"Found {len(id_dictionary)} arbitration IDs")
+print(f"Found {len(j1979_dictionary)} J1979 PIDs")
+```
+
+## Implementation Notes
+
+### Data Cleaning
+- **Variable DLC**: Arbitration IDs with inconsistent Data Length Codes are excluded from analysis
+- **Padding Removal**: Data bytes beyond the DLC are automatically removed
+- **Duplicate Timestamps**: Duplicate index values are corrected by removing duplicates
+
+### J1979 Detection
+- Automatically detects J1979 diagnostic responses on arbitration ID `0x7E8` (2024)
+- Groups responses by PID (byte 2)
+- Request messages on `0x7DF` (2015) are ignored
+
+### Performance
+- Uses pickle files for caching to speed up repeated runs
+- Set `force=True` to regenerate from raw data
+- Timer tracks import time, dictionary creation time, and per-ID processing time

@@ -1,0 +1,440 @@
+---
+title: "Semantic Analysis"
+description: "Signal correlation, clustering, and semantic labeling"
+---
+
+The `SemanticAnalysis` module provides functions for correlating signals, clustering related signals, and propagating labels across the signal space.
+
+## Functions
+
+### subset_selection
+
+```python
+subset_selection(
+    a_timer: PipelineTimer,
+    signal_dict: dict = None,
+    subset_pickle: str = "",
+    force: bool = False,
+    subset_size: float = 0.25
+) -> DataFrame
+```
+
+Selects a subset of signals with the highest Shannon entropy for correlation analysis.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="signal_dict" type="dict" default="None">
+  Signal dictionary from `generate_signals()` (nested dict by arbitration ID)
+</ParamField>
+
+<ParamField path="subset_pickle" type="str" default="''">
+  Path to pickle file for caching subset DataFrame
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate subset even if pickle file exists
+</ParamField>
+
+<ParamField path="subset_size" type="float" default="0.25">
+  Fraction of non-static signals to include in subset (0.0 to 1.0)
+</ParamField>
+
+<ResponseField name="return" type="DataFrame">
+  DataFrame with signals as columns (keyed by `(arb_id, start, stop)` tuples) and timestamps as rows, re-indexed to a common time base using nearest-neighbor interpolation
+</ResponseField>
+
+**Selection Process:**
+1. Identifies all non-static signals
+2. Ranks signals by Shannon Index (descending)
+3. Selects top `subset_size * 100%` of signals
+4. Re-indexes all signals to the longest time series using nearest-neighbor interpolation
+5. Returns DataFrame suitable for correlation analysis
+
+**Rationale:** High Shannon entropy signals contain more information and are more likely to correlate with meaningful vehicle dynamics.
+
+### subset_correlation
+
+```python
+subset_correlation(
+    subset: DataFrame,
+    csv_correlation_filename: str,
+    force: bool = False
+) -> DataFrame
+```
+
+Computes or loads a Pearson correlation matrix for a signal subset.
+
+<ParamField path="subset" type="DataFrame" required>
+  DataFrame from `subset_selection()` with signals as columns
+</ParamField>
+
+<ParamField path="csv_correlation_filename" type="str" required>
+  Path to CSV file for caching correlation matrix
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, recompute correlation even if CSV exists
+</ParamField>
+
+<ResponseField name="return" type="DataFrame">
+  Correlation matrix with signal tuples as both row and column indices (symmetric matrix with 1.0 on diagonal)
+</ResponseField>
+
+**Note:** Uses `pandas.DataFrame.corr()` to compute Pearson correlation coefficients.
+
+### greedy_signal_clustering
+
+```python
+greedy_signal_clustering(
+    correlation_matrix: DataFrame = None,
+    correlation_threshold: float = 0.8,
+    fuzzy_labeling: bool = True
+) -> dict
+```
+
+Clusters signals based on correlation threshold using a greedy algorithm.
+
+<ParamField path="correlation_matrix" type="DataFrame" default="None">
+  Correlation matrix from `subset_correlation()`
+</ParamField>
+
+<ParamField path="correlation_threshold" type="float" default="0.8">
+  Minimum absolute correlation coefficient for clustering (0.0 to 1.0)
+</ParamField>
+
+<ParamField path="fuzzy_labeling" type="bool" default="True">
+  If True, allow signals to belong to multiple clusters (fuzzy clustering)
+</ParamField>
+
+<ResponseField name="return" type="dict">
+  Dictionary mapping cluster IDs (int) to lists of signal keys `[(arb_id, start, stop), ...]`
+</ResponseField>
+
+**Algorithm:**
+1. Iterates through correlation matrix (upper triangle)
+2. For each correlation ≥ threshold:
+   - If both signals are unlabeled: create new cluster
+   - If one is labeled: add unlabeled signal to existing cluster(s)
+   - If both are labeled:
+     - **Fuzzy mode**: Create bridge cluster if they share no common clusters
+     - **Non-fuzzy mode**: Skip (already clustered)
+3. Removes duplicate clusters
+
+**Fuzzy Clustering:** Signals can belong to multiple clusters, capturing overlapping semantic relationships (e.g., a signal correlated with both speed and RPM).
+
+### label_propagation
+
+```python
+label_propagation(
+    a_timer: PipelineTimer,
+    pickle_clusters_filename: str = '',
+    pickle_all_signals_df_filename: str = '',
+    csv_signals_correlation_filename: str = '',
+    signal_dict: dict = None,
+    cluster_dict: dict = None,
+    correlation_threshold: float = 0.8,
+    force: bool = False
+) -> (DataFrame, DataFrame, dict)
+```
+
+Propagates cluster labels from high-entropy subset to all signals via correlation.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="pickle_clusters_filename" type="str" default="''">
+  Path to pickle file for updated cluster dictionary
+</ParamField>
+
+<ParamField path="pickle_all_signals_df_filename" type="str" default="''">
+  Path to pickle file for complete signals DataFrame
+</ParamField>
+
+<ParamField path="csv_signals_correlation_filename" type="str" default="''">
+  Path to CSV file for complete correlation matrix
+</ParamField>
+
+<ParamField path="signal_dict" type="dict" default="None">
+  Complete signal dictionary from `generate_signals()`
+</ParamField>
+
+<ParamField path="cluster_dict" type="dict" default="None">
+  Initial cluster dictionary from `greedy_signal_clustering()`
+</ParamField>
+
+<ParamField path="correlation_threshold" type="float" default="0.8">
+  Minimum correlation for label propagation
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate all data even if cached files exist
+</ParamField>
+
+<ResponseField name="return" type="tuple[DataFrame, DataFrame, dict]">
+  Tuple containing:
+  - `df`: DataFrame with all non-static signals (columns) and common time index (rows)
+  - `correlation_matrix`: Full correlation matrix for all signals
+  - `cluster_dict`: Updated cluster dictionary with propagated labels
+</ResponseField>
+
+**Algorithm:**
+1. Combines all non-static signals into one DataFrame
+2. Re-indexes all to common time base (largest index)
+3. Computes full correlation matrix
+4. For each signal pair with correlation ≥ threshold:
+   - If one is clustered and one isn't: add unclustered signal to cluster
+   - If both are clustered: skip (already labeled)
+   - If neither is clustered: skip (no label to propagate)
+5. Drops rows/columns with NaN values
+6. Returns updated DataFrame, correlation matrix, and expanded clusters
+
+**Rationale:** High-entropy signals (subset) are most informative for clustering. Propagation extends labels to lower-entropy signals that correlate with the subset.
+
+### j1979_signal_labeling
+
+```python
+j1979_signal_labeling(
+    a_timer: PipelineTimer,
+    j1979_corr_filename: str = "",
+    df_signals: DataFrame = None,
+    j1979_dict: dict = None,
+    signal_dict: dict = None,
+    correlation_threshold: float = 0.8,
+    force: bool = False
+) -> (dict, DataFrame)
+```
+
+Labels signals by correlating with J1979 diagnostic PIDs (e.g., speed, RPM).
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="j1979_corr_filename" type="str" default="''">
+  Path to pickle file for J1979 correlation matrix
+</ParamField>
+
+<ParamField path="df_signals" type="DataFrame" default="None">
+  DataFrame of signals from `label_propagation()`
+</ParamField>
+
+<ParamField path="j1979_dict" type="dict" default="None">
+  J1979 dictionary from PreProcessor
+</ParamField>
+
+<ParamField path="signal_dict" type="dict" default="None">
+  Signal dictionary (modified in-place with J1979 labels)
+</ParamField>
+
+<ParamField path="correlation_threshold" type="float" default="0.8">
+  Minimum absolute correlation for labeling
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate correlation even if cached file exists
+</ParamField>
+
+<ResponseField name="return" type="tuple[dict, DataFrame]">
+  Tuple containing:
+  - `signal_dict`: Updated signal dictionary with `j1979_title` and `j1979_pcc` attributes
+  - `correlation_matrix`: Correlation matrix between signals and J1979 PIDs (signals as rows, PIDs as columns)
+</ResponseField>
+
+**Labeling Process:**
+1. Aligns signal and J1979 time ranges (uses overlapping interval)
+2. Re-indexes J1979 data to match signal timestamps
+3. Concatenates signals and J1979 into one DataFrame
+4. Computes correlation matrix
+5. For each signal:
+   - Finds J1979 PID with highest absolute correlation
+   - If correlation ≥ threshold: adds `j1979_title` and `j1979_pcc` to Signal object
+6. Returns updated signal dictionary and correlation matrix
+
+**Applications:** Automatically identifies vehicle speed, RPM, throttle position, etc. in proprietary CAN signals.
+
+## Usage Example
+
+```python
+from SemanticAnalysis import (
+    subset_selection,
+    subset_correlation,
+    greedy_signal_clustering,
+    label_propagation,
+    j1979_signal_labeling
+)
+from PipelineTimer import PipelineTimer
+
+# Assume signal_dictionary and j1979_dictionary are from previous steps
+a_timer = PipelineTimer(verbose=True)
+
+print("##### BEGINNING SEMANTIC ANALYSIS #####")
+
+# Step 1: Select high-entropy subset
+subset_df = subset_selection(
+    a_timer,
+    signal_dictionary,
+    "pickleSubset.p",
+    force=False,
+    subset_size=0.25  # Top 25% by Shannon Index
+)
+
+# Step 2: Compute correlation matrix
+corr_matrix_subset = subset_correlation(
+    subset_df,
+    "subset_correlation_matrix.csv",
+    force=False
+)
+
+# Step 3: Cluster correlated signals
+cluster_dict = greedy_signal_clustering(
+    corr_matrix_subset,
+    correlation_threshold=0.85,
+    fuzzy_labeling=True
+)
+print(f"Found {len(cluster_dict)} clusters")
+
+# Step 4: Propagate labels to all signals
+df_full, corr_matrix_full, cluster_dict = label_propagation(
+    a_timer,
+    pickle_clusters_filename="pickleClusters.p",
+    pickle_all_signals_df_filename="pickleAllSignalsDataFrame.p",
+    csv_signals_correlation_filename="complete_correlation_matrix.csv",
+    signal_dict=signal_dictionary,
+    cluster_dict=cluster_dict,
+    correlation_threshold=0.85,
+    force=False
+)
+
+# Step 5: Label signals with J1979 PIDs
+if j1979_dictionary:
+    signal_dictionary, j1979_correlations = j1979_signal_labeling(
+        a_timer=a_timer,
+        j1979_corr_filename="pickleJ1979_correlation.p",
+        df_signals=df_full,
+        j1979_dict=j1979_dictionary,
+        signal_dict=signal_dictionary,
+        correlation_threshold=0.85,
+        force=False
+    )
+    
+    # Check for labeled signals
+    for arb_id, signals in signal_dictionary.items():
+        for signal_key, signal in signals.items():
+            if signal.j1979_title:
+                print(f"Signal {signal_key}: {signal.j1979_title} (r={signal.j1979_pcc:.3f})")
+```
+
+## Complete Analysis Pipeline
+
+```python
+from PreProcessor import PreProcessor
+from LexicalAnalysis import tokenize_dictionary, generate_signals
+from SemanticAnalysis import (
+    subset_selection,
+    subset_correlation,
+    greedy_signal_clustering,
+    label_propagation,
+    j1979_signal_labeling
+)
+from sklearn.preprocessing import minmax_scale
+from PipelineTimer import PipelineTimer
+
+# Configuration
+CORRELATION_THRESHOLD = 0.85
+SUBSET_SIZE = 0.25
+
+a_timer = PipelineTimer(verbose=True)
+
+# Phase 1: Preprocessing
+print("##### PREPROCESSING #####")
+pre_processor = PreProcessor("loggerProgram0.log", "pickleArbIDs.p", "pickleJ1979.p")
+id_dictionary, j1979_dictionary = pre_processor.generate_arb_id_dictionary(
+    a_timer, minmax_scale, force=False
+)
+
+# Phase 2: Lexical Analysis
+print("##### LEXICAL ANALYSIS #####")
+tokenize_dictionary(a_timer, id_dictionary, force=False)
+signal_dictionary = generate_signals(
+    a_timer, id_dictionary, "pickleSignals.p", minmax_scale, force=False
+)
+
+# Phase 3: Semantic Analysis
+print("##### SEMANTIC ANALYSIS #####")
+subset_df = subset_selection(a_timer, signal_dictionary, "pickleSubset.p", subset_size=SUBSET_SIZE)
+corr_matrix = subset_correlation(subset_df, "subset_correlation_matrix.csv")
+cluster_dict = greedy_signal_clustering(corr_matrix, CORRELATION_THRESHOLD, fuzzy_labeling=True)
+
+df_full, corr_full, cluster_dict = label_propagation(
+    a_timer,
+    pickle_clusters_filename="pickleClusters.p",
+    pickle_all_signals_df_filename="pickleAllSignals.p",
+    csv_signals_correlation_filename="complete_correlation.csv",
+    signal_dict=signal_dictionary,
+    cluster_dict=cluster_dict,
+    correlation_threshold=CORRELATION_THRESHOLD
+)
+
+if j1979_dictionary:
+    signal_dictionary, j1979_corr = j1979_signal_labeling(
+        a_timer,
+        j1979_corr_filename="pickleJ1979_correlation.p",
+        df_signals=df_full,
+        j1979_dict=j1979_dictionary,
+        signal_dict=signal_dictionary,
+        correlation_threshold=CORRELATION_THRESHOLD
+    )
+
+print(f"Analysis complete: {len(cluster_dict)} clusters identified")
+```
+
+## Algorithm Details
+
+### Shannon Index Selection
+
+Shannon entropy measures signal information content:
+- **High entropy**: Signal values are uniformly distributed (maximum information)
+- **Low entropy**: Signal values are concentrated (less informative)
+- Subset selection prioritizes high-entropy signals for computational efficiency
+
+### Greedy Clustering
+
+The algorithm is "greedy" because it:
+1. Processes correlations in matrix order (not optimal ordering)
+2. Makes immediate decisions without backtracking
+3. Creates clusters on first encounter
+
+**Trade-offs:**
+- **Fast**: O(n²) for n signals
+- **Simple**: No hyperparameters except threshold
+- **Non-deterministic**: Cluster IDs depend on iteration order
+
+### Fuzzy vs. Non-Fuzzy
+
+**Fuzzy Labeling** (`fuzzy_labeling=True`):
+- Signals can belong to multiple clusters
+- Captures overlapping semantics (e.g., gear position correlates with both speed and RPM)
+- Creates bridge clusters between related groups
+
+**Non-Fuzzy Labeling** (`fuzzy_labeling=False`):
+- Each signal belongs to at most one cluster
+- Simpler interpretation
+- May miss overlapping relationships
+
+### Label Propagation
+
+Inspired by semi-supervised learning:
+1. **Labeled set**: High-entropy subset with initial clusters
+2. **Unlabeled set**: Remaining signals
+3. **Propagation**: Assign labels based on correlation with labeled signals
+4. **No new clusters**: Unlike `greedy_signal_clustering`, only extends existing clusters
+
+## Performance Considerations
+
+- **Subset Size**: Smaller subsets (0.1-0.3) are faster but may miss rare signals
+- **Correlation Threshold**: Higher thresholds (0.85-0.95) create tighter, more meaningful clusters
+- **Caching**: All functions support pickle/CSV caching for fast re-runs
+- **Memory**: Full correlation matrix is O(n²) for n signals; subset selection reduces this

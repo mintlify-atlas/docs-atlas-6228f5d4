@@ -1,0 +1,77 @@
+---
+title: Introduction
+description: Automated reverse engineering of Controller Area Network (CAN) payloads from passenger vehicles
+---
+
+## Overview
+
+This project provides Python and R scripts for the automated reverse engineering of Controller Area Network (CAN) payloads observed from passenger vehicles. The tools enable security researchers and automotive engineers to analyze proprietary CAN bus communications without access to manufacturer specifications.
+
+## Research Background
+
+This code was originally developed by **Dr. Brent Stone** at the **Air Force Institute of Technology (AFIT)** in pursuit of a Doctor of Philosophy in Computer Science. The research focuses on enabling auditing and intrusion detection capabilities for proprietary Controller Area Networks.
+
+<Note>
+For detailed information about the methods and algorithms used, refer to the included dissertation: **"Enabling Auditing and Intrusion Detection for Proprietary Controller Area Networks"**
+</Note>
+
+## Key Capabilities
+
+The CAN reverse engineering pipeline provides three main analysis stages:
+
+### 1. Pre-Processing
+- Imports CAN log files in multiple formats (original and can-utils)
+- Identifies SAE J1979 standard communications (OBD-II)
+- Analyzes arbitration ID transmission frequencies
+- Performs data cleaning and normalization
+
+### 2. Lexical Analysis
+- Detects individual time series signals within CAN payloads
+- Tokenizes binary data to identify signal boundaries
+- Extracts and normalizes signal values
+- Generates signal dictionaries organized by arbitration ID
+
+### 3. Semantic Analysis
+- Correlates signals across different arbitration IDs
+- Performs hierarchical clustering of related signals
+- Labels signals by comparing with known J1979 data
+- Produces visualizations and correlation matrices
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Security Research" icon="shield">
+    Identify potential attack surfaces and abnormal CAN bus behavior for intrusion detection systems
+  </Card>
+  <Card title="Vehicle Diagnostics" icon="car">
+    Reverse engineer proprietary diagnostic protocols for aftermarket tools and research
+  </Card>
+  <Card title="Signal Discovery" icon="signal">
+    Map unknown CAN signals to physical vehicle parameters like RPM, speed, and brake pressure
+  </Card>
+  <Card title="Protocol Analysis" icon="network-wired">
+    Understand proprietary communication patterns and timing characteristics
+  </Card>
+</CardGroup>
+
+## Empirical Dynamic Modeling (EDM)
+
+The project includes R scripts for performing Empirical Dynamic Modeling analysis using the [rEDM package](https://CRAN.R-project.org/package=rEDM) from U.C. San Diego's Sugihara Lab. EDM helps identify causal relationships between time series signals.
+
+## Acknowledgments
+
+Special thanks to **Dave Blundell**, co-author of the Car Hacker's Handbook, and the **Open Garages** community for technical advice and collaboration.
+
+---
+
+## Legal Notice
+
+<Warning>
+The views expressed in this documentation and code are those of the author and do not reflect the official policy or position of the United States Air Force, the United States Army, the United States Department of Defense, or the United States Government.
+
+This material is declared a work of the U.S. Government and is not subject to copyright protection in the United States.
+
+**Public Disclosure Approvals:**
+- Code: 88ABW-2019-0910 (08 March 2019)
+- Dissertation: 88ABW-2019-0024 (03 January 2019)
+</Warning>

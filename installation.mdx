@@ -1,0 +1,204 @@
+---
+title: Installation
+description: Set up your environment for CAN reverse engineering
+---
+
+## System Requirements
+
+<CardGroup cols={2}>
+  <Card title="Python Version" icon="python">
+    Python 3.6 or higher
+  </Card>
+  <Card title="Operating System" icon="desktop">
+    Linux, macOS, or Windows
+  </Card>
+</CardGroup>
+
+The scripts were developed and tested using **Python 3.6**. Ensure you have a compatible Python version installed before proceeding.
+
+## Python Dependencies
+
+The project requires the following Python packages:
+
+### Core Dependencies
+
+From `requirements.txt`:
+```txt
+scikit-learn
+pandas
+matplotlib
+```
+
+Additional dependencies imported in the codebase:
+- `numpy` - Numerical computing
+- `pickle` - Data serialization (standard library)
+- `argparse` - Command-line argument parsing (standard library)
+
+## Installation Steps
+
+<Steps>
+  <Step title="Clone the Repository">
+    Clone the project to your local machine:
+    ```bash
+    git clone <repository-url>
+    cd CAN-Reverse-Engineering
+    ```
+  </Step>
+
+  <Step title="Install Python Packages">
+    Install all required dependencies using pip:
+    ```bash
+    pip install scikit-learn pandas matplotlib numpy
+    ```
+    
+    Or install from the requirements file:
+    ```bash
+    pip install -r requirements.txt
+    pip install numpy
+    ```
+    
+    <Note>
+    Consider using a virtual environment to isolate project dependencies:
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    pip install -r requirements.txt
+    ```
+    </Note>
+  </Step>
+
+  <Step title="Verify Installation">
+    Verify that all packages are installed correctly:
+    ```bash
+    python -c "import sklearn, pandas, matplotlib, numpy; print('All packages installed successfully')"
+    ```
+    
+    Expected output:
+    ```
+    All packages installed successfully
+    ```
+  </Step>
+
+  <Step title="Navigate to Pipeline Directory">
+    Change to the Pipeline directory where the main scripts are located:
+    ```bash
+    cd Pipeline
+    ```
+  </Step>
+</Steps>
+
+## Optional: R Setup for EDM Analysis
+
+For advanced Empirical Dynamic Modeling (EDM) analysis, you'll need to install R and the rEDM package.
+
+<Steps>
+  <Step title="Install R">
+    Download and install R from [CRAN](https://cran.r-project.org/):
+    - **Linux**: `sudo apt-get install r-base` (Ubuntu/Debian)
+    - **macOS**: Download from CRAN or use Homebrew: `brew install r`
+    - **Windows**: Download installer from CRAN
+  </Step>
+
+  <Step title="Install rEDM Package">
+    Open R console and install the rEDM package:
+    ```r
+    install.packages("rEDM")
+    ```
+    
+    For more information, visit [U.C. San Diego's Sugihara Lab](https://deepeco.ucsd.edu/)
+  </Step>
+</Steps>
+
+## Verification
+
+### Check Python Environment
+
+Run this command to verify your Python version:
+```bash
+python --version
+```
+
+Expected output should show Python 3.6 or higher:
+```
+Python 3.6.x or higher
+```
+
+### Test Script Execution
+
+Verify that the main script can be executed:
+```bash
+python Main.py --help
+```
+
+Expected output:
+```
+usage: Main.py [-h] [-c] [filename [filename ...]]
+
+positional arguments:
+  filename        filename of CAN log file
+
+optional arguments:
+  -h, --help      show this help message and exit
+  -c, --can-utils read file in Linux can-utils format
+```
+
+## Troubleshooting
+
+### Common Issues
+
+<AccordionGroup>
+  <Accordion title="ImportError: No module named 'sklearn'">
+    This means scikit-learn is not installed. Install it with:
+    ```bash
+    pip install scikit-learn
+    ```
+  </Accordion>
+
+  <Accordion title="ModuleNotFoundError: No module named 'pandas'">
+    Install pandas:
+    ```bash
+    pip install pandas
+    ```
+  </Accordion>
+
+  <Accordion title="Python version too old">
+    The scripts require Python 3.6+. Check your version:
+    ```bash
+    python --version
+    ```
+    
+    If using an older version, install Python 3.6 or higher from [python.org](https://www.python.org/downloads/)
+  </Accordion>
+
+  <Accordion title="Permission denied when installing packages">
+    Try using `--user` flag:
+    ```bash
+    pip install --user scikit-learn pandas matplotlib numpy
+    ```
+    
+    Or use a virtual environment to avoid system-wide installation.
+  </Accordion>
+
+  <Accordion title="Scripts won't run immediately">
+    As noted in the project documentation:
+    > "These scripts won't run immediately when cloning this repo."
+    
+    Make sure you:
+    1. Have all dependencies installed
+    2. Have properly formatted CAN log data
+    3. Are in the correct directory (Pipeline/)
+    4. Have Python 3.6+ available
+  </Accordion>
+</AccordionGroup>
+
+## Getting Help
+
+If you encounter issues not covered here:
+
+- Post questions in the [Open Garages Google Group](https://groups.google.com/forum/#!forum/open-garages)
+- Check that your CAN data format matches the expected format (see Quickstart guide)
+- Review the example `loggerProgram0.log` file for proper formatting
+
+## Next Steps
+
+Once installation is complete, proceed to the [Quickstart Guide](/quickstart) to run your first analysis.

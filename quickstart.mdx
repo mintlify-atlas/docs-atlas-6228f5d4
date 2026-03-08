@@ -1,80 +1,359 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Run your first CAN payload analysis in minutes
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This guide will walk you through running the CAN reverse engineering pipeline on sample data. The pipeline processes CAN log files and automatically identifies signals, correlates time series data, and generates visualizations.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+- Python 3.6+ installed
+- Required packages installed (see [Installation](/installation))
+- Navigate to the `Pipeline/` directory
+
+## Quick Start: Using Example Data
+
+<Steps>
+  <Step title="Navigate to Pipeline Directory">
+    ```bash
+    cd Pipeline
+    ```
+  </Step>
+
+  <Step title="Run with Default Example Data">
+    The simplest way to run the pipeline is with the default example file:
+    ```bash
+    python Main.py
+    ```
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    This will process `loggerProgram0.log` using default settings.
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Note>
+    The first run will take longer as it processes raw data. Subsequent runs use cached pickle files for faster execution.
+    </Note>
+  </Step>
 
-### Step 2: Deploy your changes
+  <Step title="View Output">
+    Results are saved in the `output/` directory:
+    - `.p` files: Pickle files containing processed data structures
+    - `.csv` files: Correlation matrices
+    - `.png` files: Visualizations of signal clusters and time series
+  </Step>
+</Steps>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Running with Your Own Data
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+### Original Format
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+For CAN data in the original format (tab-separated values):
 
-### Step 3: Go live
+```bash
+python Main.py originalFormat.log
+```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+### CAN-Utils Format
 
-## Next steps
+For data captured with Linux can-utils (candump):
 
-Now that you have your docs running, explore these key features:
+<CodeGroup>
+```bash Short flag
+python Main.py -c inputFile.log
+```
 
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+```bash Long flag
+python Main.py --can-utils inputFile.log
+```
+</CodeGroup>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+The `--can-utils` flag converts can-utils log format to the internal TSV format before processing.
 </Note>
+
+## Understanding the Pipeline
+
+The pipeline executes three main phases:
+
+### 1. Pre-Processing
+
+```python
+# From Main.py lines 82-92
+pre_processor = PreProcessor(
+    can_data_filename, pickle_arb_id_filename, pickle_j1979_filename)
+id_dictionary, j1979_dictionary = pre_processor.generate_arb_id_dictionary(a_timer,
+                                                                           tang_normalize_strategy,
+                                                                           time_conversion,
+                                                                           freq_analysis_accuracy,
+                                                                           freq_synchronous_threshold,
+                                                                           force_pre_processing)
+```
+
+**What it does:**
+- Imports CAN log file into Pandas DataFrame
+- Groups messages by Arbitration ID
+- Identifies J1979 (OBD-II) data
+- Analyzes transmission frequencies
+- Creates ArbID objects for each unique ID
+
+### 2. Lexical Analysis
+
+```python
+# From Main.py lines 96-109
+tokenize_dictionary(a_timer,
+                    id_dictionary,
+                    force_lexical_analysis,
+                    include_padding=tokenize_padding,
+                    merge=True,
+                    max_distance=tokenization_bit_distance)
+signal_dictionary = generate_signals(a_timer,
+                                     id_dictionary,
+                                     pickle_signal_filename,
+                                     signal_normalize_strategy,
+                                     force_lexical_analysis)
+```
+
+**What it does:**
+- Tokenizes binary payloads to detect signal boundaries
+- Extracts individual time series signals
+- Normalizes signal values
+- Creates Signal objects for each detected time series
+
+### 3. Semantic Analysis
+
+```python
+# From Main.py lines 112-139
+subset_df = subset_selection(a_timer,
+                            signal_dictionary,
+                            pickle_subset_filename,
+                            force_semantic_analysis,
+                            subset_size=subset_selection_size)
+corr_matrix_subset = subset_correlation(
+    subset_df, csv_correlation_filename, force_semantic_analysis)
+cluster_dict = greedy_signal_clustering(corr_matrix_subset,
+                                        correlation_threshold=min_correlation_threshold,
+                                        fuzzy_labeling=fuzzy_labeling)
+```
+
+**What it does:**
+- Computes correlation matrix between all signals
+- Performs hierarchical clustering
+- Labels signals by correlation with J1979 data
+- Generates cluster visualizations and dendrograms
+
+## Configuration Options
+
+You can customize the pipeline behavior by modifying variables in `Main.py`:
+
+### Output Control
+
+```python
+# From Main.py lines 50-62
+force_pre_processing:       bool = False  # Re-process raw data
+force_j1979_plotting:       bool = False  # Plot J1979 signals
+force_lexical_analysis:     bool = False  # Re-run tokenization
+force_arb_id_plotting:      bool = True   # Plot signals by Arb ID
+force_semantic_analysis:    bool = False  # Re-run clustering
+force_signal_labeling:      bool = False  # Re-label signals
+use_j1979_tags_in_plots:    bool = True   # Show J1979 labels
+force_cluster_plotting:     bool = False  # Plot signal clusters
+dump_to_pickle:             bool = True   # Save intermediate results
+```
+
+<Tip>
+Set `force_*` flags to `True` to re-run specific pipeline stages, bypassing cached pickle files.
+</Tip>
+
+### Analysis Parameters
+
+```python
+# From Main.py lines 70-77
+tokenization_bit_distance:  float = 0.2   # Signal boundary threshold
+subset_selection_size:      float = 0.25  # Fraction of signals for correlation
+fuzzy_labeling:             bool = True   # Allow multiple cluster assignments
+min_correlation_threshold:  float = 0.85  # Minimum correlation for clustering
+```
+
+### Normalization Strategy
+
+```python
+# From Main.py lines 46-48
+from sklearn.preprocessing import minmax_scale
+
+tang_normalize_strategy:    Callable = minmax_scale
+signal_normalize_strategy:  Callable = minmax_scale
+```
+
+## Examining Output Files
+
+<Steps>
+  <Step title="Navigate to Output Directory">
+    ```bash
+    cd output
+    ls -lh
+    ```
+  </Step>
+
+  <Step title="View Pickle Files">
+    Pickle files store Python objects for fast re-loading:
+    
+    ```python
+    import pickle
+    
+    # Load processed arbitration IDs
+    with open('pickleArbIDs.p', 'rb') as f:
+        arb_ids = pickle.load(f)
+    
+    # Load detected signals
+    with open('pickleSignals.p', 'rb') as f:
+        signals = pickle.load(f)
+    
+    # Load signal clusters
+    with open('pickleClusters.p', 'rb') as f:
+        clusters = pickle.load(f)
+    ```
+  </Step>
+
+  <Step title="Open Correlation Matrix">
+    View signal correlations in CSV format:
+    ```bash
+    # View subset correlation matrix
+    cat subset_correlation_matrix.csv
+    
+    # Or open in spreadsheet software
+    libreoffice subset_correlation_matrix.csv
+    ```
+  </Step>
+
+  <Step title="View Visualizations">
+    The pipeline generates several plots:
+    - Signal time series grouped by Arbitration ID
+    - Signal time series grouped by cluster
+    - Hierarchical clustering dendrogram
+    - J1979 signal plots (if present)
+    
+    Open PNG files with your preferred image viewer.
+  </Step>
+</Steps>
+
+## Expected Output
+
+When the pipeline completes successfully, you'll see:
+
+```
+Reading in loggerProgram0.log...
+
+                BEGINNING LEXICAL ANALYSIS
+
+                BEGINNING SEMANTIC ANALYSIS
+
+Dumping arb ID dictionary to pickleArbIDs.p
+    Complete...
+Dumping J1979 dictionary to pickleJ1979.p
+    Complete...
+Dumping signal dictionary to pickleSignals.p
+    Complete...
+Dumping signal subset list to pickleSubset.p
+    Complete...
+Dumping subset correlation matrix to subset_correlation_matrix.csv
+    Complete...
+[... additional output ...]
+```
+
+## Example: Processing CAN-Utils Data
+
+Here's a complete example of processing data from Linux can-utils:
+
+<Steps>
+  <Step title="Capture CAN Data">
+    Use candump to capture CAN traffic:
+    ```bash
+    candump -l can0
+    # Creates candump-2024-03-08_120000.log
+    ```
+  </Step>
+
+  <Step title="Run Pipeline with CAN-Utils Format">
+    ```bash
+    python Main.py --can-utils candump-2024-03-08_120000.log
+    ```
+    
+    The `FromCanUtilsLog.py` module converts the format:
+    ```python
+    # From FromCanUtilsLog.py lines 3-29
+    def canUtilsToTSV(filename):
+        outFileName = filename + ".tsv"
+        with open(outFileName, "w") as outFile:
+            with open(filename, "r") as file:
+                linePattern = re.compile(r"\((\d+.\d+)\)\s+[^\s]+\s+([0-9A-F#]{3}|[0-9A-F#]{8})#([0-9A-F]+)")
+                # ... conversion logic
+    ```
+  </Step>
+
+  <Step title="Analyze Results">
+    Check the `output/` directory for:
+    - Identified signals and their clusters
+    - Correlation matrices showing related signals
+    - Visual plots of time series data
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="FileNotFoundError: loggerProgram0.log">
+    Make sure you're in the `Pipeline/` directory and the example log file exists:
+    ```bash
+    ls -l loggerProgram0.log
+    ```
+    
+    If missing, provide your own CAN log file as an argument.
+  </Accordion>
+
+  <Accordion title="ValueError: could not convert string to float">
+    This may indicate improperly formatted input data. Verify your log file format matches the expected structure:
+    - Tab-separated values
+    - Columns: time, id, dlc, b0, b1, b2, b3, b4, b5, b6, b7
+    - Hexadecimal values for ID and bytes
+  </Accordion>
+
+  <Accordion title="No output files generated">
+    Check that `dump_to_pickle` is set to `True` in `Main.py` (line 62):
+    ```python
+    dump_to_pickle: bool = True
+    ```
+  </Accordion>
+
+  <Accordion title="Pipeline runs but no signals detected">
+    This can happen with:
+    - Short capture duration (not enough data)
+    - Static CAN traffic (no changing signals)
+    - Incorrect tokenization parameters
+    
+    Try adjusting `tokenization_bit_distance` in `Main.py` (line 71).
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Advanced Usage" icon="gears" href="/advanced/multi-file-processing">
+    Process multiple CAN log files simultaneously
+  </Card>
+  <Card title="EDM Analysis" icon="chart-line" href="/advanced/time-series-analysis">
+    Perform causal analysis with Empirical Dynamic Modeling
+  </Card>
+  <Card title="Pipeline Details" icon="diagram-project" href="/pipeline/preprocessing">
+    Detailed pipeline stages and algorithms
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/arbid">
+    Complete API documentation for classes and modules
+  </Card>
+</CardGroup>
+
+## Getting Help
+
+For questions and community support:
+- Join the [Open Garages Google Group](https://groups.google.com/forum/#!forum/open-garages)
+- Review the dissertation for theoretical background
+- Examine example output files included with the project

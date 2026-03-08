@@ -1,0 +1,241 @@
+---
+title: 'ArbID'
+description: 'CAN Arbitration ID container with signal analysis and frequency characteristics'
+---
+
+## Overview
+
+The `ArbID` class represents a CAN bus Arbitration ID and stores all associated data, analysis results, and metadata throughout the reverse engineering pipeline. Each instance encapsulates the raw data, binary representations, transmission frequency characteristics, and lexical tokenization for a single arbitration ID.
+
+## Constructor
+
+```python
+ArbID(arb_id: int)
+```
+
+Initializes a new ArbID instance with the specified arbitration ID value.
+
+<ParamField path="arb_id" type="int" required>
+  The CAN Arbitration ID value (e.g., 0x123, 0x7E8)
+</ParamField>
+
+## Instance Attributes
+
+### Basic Identification
+
+<ResponseField name="id" type="int">
+  The CAN Arbitration ID value assigned during initialization
+</ResponseField>
+
+<ResponseField name="dlc" type="int" default="0">
+  Data Length Code - the number of bytes in the CAN payload (0-8). Set by `PreProcessing.generate_arb_id_dictionary()`
+</ResponseField>
+
+<ResponseField name="original_data" type="DataFrame" default="None">
+  Pandas DataFrame containing the time-indexed raw hexadecimal payload data. Columns represent byte positions (b0-b7), rows represent messages indexed by timestamp. Set by `PreProcessing.generate_arb_id_dictionary()`
+</ResponseField>
+
+### Binary Matrix and Tang Representation
+
+These attributes are populated by the `generate_binary_matrix_and_tang()` method.
+
+<ResponseField name="boolean_matrix" type="ndarray" default="None">
+  Binary representation of payload data with shape `(num_messages, dlc*8)`. Each row represents one CAN message, with bits expanded across columns. Data type is `uint8` with values 0 or 1
+</ResponseField>
+
+<ResponseField name="tang" type="ndarray" default="None">
+  Normalized transition activity for each bit position. Calculated using XOR between consecutive messages to detect bit transitions. Normalized using the provided strategy (typically min-max scaling). Shape is `(dlc*8,)` with dtype `float64`
+</ResponseField>
+
+<ResponseField name="static" type="bool" default="True">
+  Indicates if the Arb ID contains any dynamic data. Set to `False` if any bit position shows transitions (max tang > 0)
+</ResponseField>
+
+### Transmission Frequency Analysis
+
+These attributes are populated by the `analyze_transmission_frequency()` method.
+
+<ResponseField name="ci_sensitivity" type="float" default="0.0">
+  The z-score used for confidence interval calculation (e.g., 1.645 for 90% CI)
+</ResponseField>
+
+<ResponseField name="freq_mean" type="float" default="0.0">
+  Mean transmission interval in milliseconds (or specified time units)
+</ResponseField>
+
+<ResponseField name="freq_std" type="float" default="0.0">
+  Standard deviation of transmission intervals in milliseconds
+</ResponseField>
+
+<ResponseField name="freq_ci" type="tuple" default="None">
+  Confidence interval tuple `(lower_bound, upper_bound)` for transmission frequency, assuming Gaussian normal distribution
+</ResponseField>
+
+<ResponseField name="mean_to_ci_ratio" type="float" default="0.0">
+  Ratio of confidence interval range to mean frequency: `(2 * mean_offset) / freq_mean`. Used as a heuristic to classify synchronous transmission patterns
+</ResponseField>
+
+<ResponseField name="synchronous" type="bool" default="False">
+  Set to `True` if `mean_to_ci_ratio <= synchronous_threshold`, indicating the Arb ID transmits at a consistent, engineered frequency
+</ResponseField>
+
+### Lexical Analysis
+
+These attributes are populated by `LexicalAnalysis.get_composition()`.
+
+<ResponseField name="tokenization" type="List[tuple]" default="[]">
+  List of tuples representing lexical tokens (bit position ranges) identified in the payload structure
+</ResponseField>
+
+<ResponseField name="padding" type="List[int]" default="[]">
+  List of bit positions identified as static padding bytes
+</ResponseField>
+
+## Methods
+
+### generate_binary_matrix_and_tang
+
+```python
+generate_binary_matrix_and_tang(
+    a_timer: PipelineTimer,
+    normalize_strategy: Callable
+) -> None
+```
+
+Converts hexadecimal payload data to a binary matrix and calculates normalized transition activity (tang) for each bit position.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer object for performance profiling
+</ParamField>
+
+<ParamField path="normalize_strategy" type="Callable" required>
+  Normalization function (e.g., `sklearn.preprocessing.minmax_scale`) applied to the tang array. Must accept parameters: `(array, axis, copy)`
+</ParamField>
+
+**Process:**
+1. Creates `boolean_matrix` with shape `(num_messages, dlc*8)` filled with zeros
+2. Iterates through each message in `original_data`
+3. Converts each non-zero byte to an 8-bit binary string
+4. Populates the corresponding bit positions in the matrix
+5. Calculates transition matrix using XOR between consecutive rows
+6. Sums transitions per bit position to create the tang vector
+7. Normalizes tang using the provided strategy
+8. Sets `static` to `False` if any transitions detected
+
+**Example Usage:**
+```python
+from sklearn.preprocessing import minmax_scale
+
+arb_id = ArbID(0x123)
+arb_id.dlc = 8
+arb_id.original_data = df  # Pre-loaded DataFrame
+
+arb_id.generate_binary_matrix_and_tang(timer, minmax_scale)
+# Now arb_id.boolean_matrix and arb_id.tang are populated
+```
+
+### analyze_transmission_frequency
+
+```python
+analyze_transmission_frequency(
+    time_convert: int = 1000,
+    ci_accuracy: float = 1.645,
+    synchronous_threshold: float = 0.1
+) -> None
+```
+
+Analyzes transmission timing characteristics and classifies the Arb ID as synchronous or asynchronous.
+
+<ParamField path="time_convert" type="int" default="1000">
+  Conversion factor to apply to time intervals (e.g., 1000 converts seconds to milliseconds)
+</ParamField>
+
+<ParamField path="ci_accuracy" type="float" default="1.645">
+  Z-score for confidence interval calculation:
+  - 1.28 for 80% CI
+  - 1.645 for 90% CI
+  - 1.96 for 95% CI
+  - 2.33 for 98% CI
+  - 2.58 for 99% CI
+</ParamField>
+
+<ParamField path="synchronous_threshold" type="float" default="0.1">
+  Maximum `mean_to_ci_ratio` value to classify as synchronous. Values ≤ 0.1 indicate transmission frequency is consistent enough to be considered engineered/synchronous
+</ParamField>
+
+**Process:**
+1. Skips analysis if fewer than 4 data points exist
+2. Calculates transmission intervals from DataFrame index timestamps
+3. Computes mean and standard deviation of intervals
+4. Calculates confidence interval assuming Gaussian distribution
+5. Computes `mean_to_ci_ratio` as a consistency heuristic
+6. Sets `synchronous` flag based on threshold comparison
+
+**Synchronous Classification Logic:**
+
+The `mean_to_ci_ratio` provides a scale-independent measure of transmission consistency. For example:
+- An Arb ID with 1000ms mean frequency and 50ms CI range has ratio = 0.05 → likely synchronous
+- An Arb ID with 40ms mean frequency and 50ms CI range has ratio = 1.25 → likely asynchronous/high-frequency
+
+This assumes the OEM designed the bus properly without excessive arbitration losses.
+
+**Example Usage:**
+```python
+arb_id.analyze_transmission_frequency(
+    time_convert=1000,      # Convert to milliseconds
+    ci_accuracy=1.645,      # 90% confidence
+    synchronous_threshold=0.1
+)
+
+print(f"Mean frequency: {arb_id.freq_mean:.2f} ms")
+print(f"Synchronous: {arb_id.synchronous}")
+```
+
+## Usage Example
+
+```python
+from Pipeline.ArbID import ArbID
+from sklearn.preprocessing import minmax_scale
+import pandas as pd
+
+# Create ArbID instance
+arb_id = ArbID(0x123)
+
+# Set attributes (normally done by PreProcessing)
+arb_id.dlc = 8
+arb_id.original_data = pd.DataFrame(...)  # Time-indexed payload data
+
+# Generate binary representation and transition analysis
+arb_id.generate_binary_matrix_and_tang(timer, minmax_scale)
+
+# Analyze transmission frequency
+arb_id.analyze_transmission_frequency(
+    time_convert=1000,
+    ci_accuracy=1.645,
+    synchronous_threshold=0.1
+)
+
+# Check results
+if not arb_id.static:
+    print(f"Arb ID 0x{arb_id.id:03X} contains dynamic data")
+    print(f"Transmission: {arb_id.freq_mean:.2f}ms ± {arb_id.freq_std:.2f}ms")
+    print(f"Synchronous: {arb_id.synchronous}")
+```
+
+## Pipeline Integration
+
+The ArbID class is used throughout the CAN reverse engineering pipeline:
+
+1. **Pre-Processing** (`PreProcessor.generate_arb_id_dictionary()`):
+   - Creates ArbID instances for each unique arbitration ID
+   - Sets `dlc` and `original_data`
+   - Calls `generate_binary_matrix_and_tang()`
+   - Calls `analyze_transmission_frequency()`
+
+2. **Lexical Analysis** (`LexicalAnalysis.tokenize_dictionary()`):
+   - Populates `tokenization` and `padding` attributes
+   - Uses `tang` values to identify signal boundaries
+
+3. **Signal Generation** (`LexicalAnalysis.generate_signals()`):
+   - Extracts Signal objects from identified tokens
+   - Uses `boolean_matrix` to create time series data

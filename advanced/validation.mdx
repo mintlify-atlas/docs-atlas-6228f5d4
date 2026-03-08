@@ -1,0 +1,392 @@
+---
+title: Validation and Metrics
+description: Quantify reverse engineering consistency and reliability using train-test validation
+---
+
+## Overview
+
+The `Validator.py` class implements rigorous validation techniques to quantify the **consistency and reliability** of lexical and semantic analysis results. This is essential for research applications and ensuring reproducible findings.
+
+<Info>
+Validation metrics transform qualitative analysis into quantifiable results suitable for academic publication and comparative studies.
+</Info>
+
+## Purpose of Validation
+
+CAN reverse engineering faces several challenges:
+- **No ground truth**: Unlike supervised ML, we don't know the "correct" answer
+- **Parameter sensitivity**: Results depend on threshold settings
+- **Data variance**: Different driving conditions produce different patterns
+
+**Validation addresses these by:**
+1. Measuring consistency across data subsets (train-test splits)
+2. Quantifying parameter optimization effectiveness
+3. Providing reproducible metrics for comparison
+
+## Validator.py Methodology
+
+The Validator class uses **k-fold cross-validation** adapted for unsupervised reverse engineering:
+
+```python Pipeline_multi-file/Validator.py
+class Validator:
+    def __init__(self, use_j1979: bool = False, fold_n: int = 5):
+        self.use_j1979 = use_j1979
+        self.fold_n = fold_n
+```
+
+### Key Parameters
+- `fold_n`: Number of folds for k-fold validation (default: 5)
+- `use_j1979`: Whether to include J1979 data in validation
+
+## Train-Test Split Validation
+
+The core validation approach splits data into training and testing sets, then measures tokenization consistency:
+
+```python Pipeline_multi-file/Validator.py
+def k_fold_lex_threshold_selection(self, id_dict: dict, sample):
+    list_of_inversion_values = arange(0, 1.01, 0.01)
+    list_of_merge_values = arange(0, 1.01, 0.01)
+    sample.avg_score_matrix = zeros((len(list_of_inversion_values), 
+                                     len(list_of_merge_values)), dtype=float16)
+    
+    for id_label, arb_id in id_dict.items():
+        if arb_id.static or arb_id.short:
+            continue
+        
+        this_id_avg_score_matrix = zeros((len(list_of_inversion_values), 
+                                          len(list_of_merge_values)), 
+                                         dtype=float16)
+        
+        kf = KFold(n_splits=self.fold_n)
+        for k, (train, test) in enumerate(kf.split(arb_id.boolean_matrix)):
+            score_matrix = zeros((len(list_of_inversion_values), 
+                                 len(list_of_merge_values)), dtype=float16)
+            
+            # Generate TANG for train and test splits
+            train_tang = arb_id.generate_tang(boolean_matrix=arb_id.boolean_matrix[train])
+            test_tang = arb_id.generate_tang(boolean_matrix=arb_id.boolean_matrix[test])
+            
+            # Score all parameter combinations
+            for m, i in enumerate(list_of_inversion_values):
+                for n, j in enumerate(list_of_merge_values):
+                    score_matrix[m, n] = train_test_alignment_score(
+                        train_tang, test_tang, i, j)
+            
+            this_id_avg_score_matrix = add(this_id_avg_score_matrix, score_matrix)
+        
+        this_id_avg_score_matrix = divide(this_id_avg_score_matrix, self.fold_n)
+        sample.avg_score_matrix = add(sample.avg_score_matrix, this_id_avg_score_matrix)
+```
+
+### How It Works
+
+1. **Grid Search**: Tests all combinations of:
+   - Inversion distance: 0.00 to 1.00 in 0.01 increments
+   - Merge distance: 0.00 to 1.00 in 0.01 increments
+
+2. **K-Fold Split**: For each Arb ID:
+   - Split payloads into k folds (default k=5)
+   - Use each fold as test set once
+   - Average scores across all folds
+
+3. **Alignment Scoring**: Measures consistency between train/test tokenization
+
+<Warning>
+According to Main.py comments, the threshold optimization feature is marked as "NOT WORKING?" - use with caution and validate results manually.
+</Warning>
+
+## Alignment Score Metric
+
+The alignment score quantifies how consistently tokenization boundaries are detected:
+
+```python Pipeline_multi-file/Validator.py
+def alignment_score(mismatch: int, bit_width: int):
+    # Alignment Score: 1 - (union-intersection) / (n-1)
+    # Range: 0 (all mismatch) to 1 (all match)
+    return float16(1 - mismatch / (bit_width - 1))
+
+def train_test_alignment_score(tang_a: ndarray, tang_b: ndarray, 
+                               max_inversion: float, max_merge: float):
+    # Tokenize both TANGs
+    comp_a, padding = get_composition_just_tang(tang_a, 
+                                                include_padding=True, 
+                                                max_inversion_distance=max_inversion)
+    comp_a = merge_tokens_just_composition(tokens=comp_a, this_tang=tang_a, 
+                                          max_distance=max_merge)
+    
+    comp_b, padding = get_composition_just_tang(tang_b, 
+                                                include_padding=True, 
+                                                max_inversion_distance=max_inversion)
+    comp_b = merge_tokens_just_composition(tokens=comp_b, this_tang=tang_b, 
+                                          max_distance=max_merge)
+    
+    # Extract token boundaries
+    id_a_borders = []
+    id_b_borders = []
+    
+    for token in comp_a:
+        id_a_borders.extend(borders(token, bit_width-1))
+    for token in comp_b:
+        id_b_borders.extend(borders(token, bit_width-1))
+    
+    id_a_borders = set(id_a_borders)
+    id_b_borders = set(id_b_borders)
+    
+    # Mismatch = symmetric difference (borders in only one set)
+    mismatch_set = id_a_borders.union(id_b_borders) - \
+                   id_a_borders.intersection(id_b_borders)
+    
+    return alignment_score(len(mismatch_set), bit_width)
+```
+
+### Interpreting Alignment Scores
+
+| Score Range | Interpretation | Action |
+|-------------|----------------|--------|
+| **0.90 - 1.00** | Excellent consistency | Parameters well-tuned |
+| **0.70 - 0.89** | Good consistency | Acceptable for most uses |
+| **0.50 - 0.69** | Moderate consistency | Consider parameter tuning |
+| **< 0.50** | Poor consistency | Re-evaluate thresholds or data quality |
+
+## Consistency Metrics for Analysis Stages
+
+### Lexical Analysis Consistency
+
+Measures how reliably token boundaries are detected:
+
+```python
+# Token boundary consistency across train-test splits
+# High scores indicate reliable signal identification
+alignment_score = train_test_alignment_score(train_tang, test_tang, 
+                                             inversion_dist, merge_dist)
+```
+
+**What it tells you:**
+- Consistent tokenization → reliable signal extraction
+- Inconsistent tokenization → parameter tuning needed or noisy data
+
+### Semantic Analysis Consistency
+
+While not explicitly implemented in Validator.py, semantic consistency can be measured by:
+
+1. **Cluster stability**: Do signals cluster similarly across subsets?
+2. **Correlation matrix similarity**: Are correlation patterns reproducible?
+3. **J1979 labeling agreement**: Do known signals get labeled consistently?
+
+<Tip>
+You can extend Validator.py to measure semantic consistency by comparing cluster assignments across k-folds.
+</Tip>
+
+## Statistical Metrics
+
+While `SampleStats.py` wasn't found in the source, the Sample class tracks metrics like:
+
+- Number of Arb IDs processed
+- Number of signals extracted per Arb ID
+- Static vs dynamic Arb ID ratios
+- J1979 identification rates
+- Processing time per stage (via PipelineTimer)
+
+These are saved in pickled data and output files for later analysis.
+
+## Quantifying Pipeline Performance
+
+Key performance indicators for the pipeline:
+
+### 1. Signal Extraction Rate
+```python
+total_signals = len(signal_dict)
+total_arb_ids = len(id_dict)
+avg_signals_per_id = total_signals / total_arb_ids
+```
+
+### 2. J1979 Recovery Rate
+```python
+if j1979_dict:
+    j1979_recovery_rate = len(j1979_dict) / total_expected_j1979_pids
+```
+
+### 3. Clustering Quality
+```python
+# Singleton clusters indicate over-segmentation
+singleton_clusters = sum(1 for cluster in cluster_dict.values() if len(cluster) < 2)
+quality_metric = 1 - (singleton_clusters / len(cluster_dict))
+```
+
+### 4. Processing Efficiency
+```python Pipeline_multi-file/Sample.py
+# PipelineTimer tracks execution time
+a_timer = PipelineTimer(verbose=True)
+# Automatically records time for each stage
+```
+
+## Use in Research and Papers
+
+The validation framework was used in Dr. Brent Stone's dissertation. Key applications:
+
+### Comparative Analysis
+- Compare performance across different vehicles
+- Evaluate parameter sensitivity
+- Demonstrate algorithm robustness
+
+### Reproducible Results
+```python
+# Save validation results for reproducibility
+save(sample.avg_score_matrix, open(pickle_threshold_filename, "wb"))
+
+# Load for later analysis or publication
+load(open(pickle_threshold_filename, "rb"))
+```
+
+### Quantitative Claims
+Instead of:
+> "The algorithm successfully extracts signals from CAN data."
+
+With validation:
+> "The algorithm achieves 0.87 average alignment score across 5-fold validation on 15 vehicle samples, demonstrating consistent signal extraction."
+
+## Interpreting Validation Results
+
+### High Alignment Scores
+**Indicates:**
+- Parameters are well-tuned for the data
+- Tokenization is stable and reliable
+- Results are reproducible across subsets
+
+**Action:** Proceed with confidence; results are trustworthy
+
+### Low Alignment Scores
+**Indicates:**
+- Parameters may not fit the data well
+- High variability in CAN traffic patterns
+- Potential data quality issues
+
+**Action:**
+1. Review parameter settings
+2. Inspect raw CAN data for anomalies
+3. Consider per-vehicle parameter tuning
+4. Increase data collection duration
+
+### Inconsistent Scores Across Arb IDs
+**Indicates:**
+- Some signals are more regular than others (expected)
+- Mixed data types (counters, sensors, status flags)
+- Variable encoding schemes across IDs
+
+**Action:** Analyze per-ID scores to identify problematic IDs
+
+## Best Practices for Reliable Results
+
+### 1. Sufficient Data Volume
+```python
+# Ensure adequate samples per Arb ID
+for id_label, arb_id in id_dict.items():
+    if arb_id.original_data.shape[0] < 100:
+        print(f"Warning: ID {id_label} has only {arb_id.original_data.shape[0]} samples")
+```
+
+<Tip>
+Aim for at least 100-500 unique payloads per Arb ID for reliable validation. More dynamic signals (like speed) need more samples.
+</Tip>
+
+### 2. Representative Data
+- Capture diverse driving conditions
+- Include full operational range (idle, acceleration, braking)
+- Avoid excessive stationary/idle periods
+
+### 3. Proper K-Fold Configuration
+```python
+kfold_n: int = 5  # Good default
+# Use k=10 for smaller datasets
+# Use k=3 for very large datasets (faster)
+```
+
+### 4. Parameter Grid Resolution
+```python
+# Fine-grained search (slower, more accurate)
+list_of_inversion_values = arange(0, 1.01, 0.01)  # 101 values
+
+# Coarse search (faster, less precise)
+list_of_inversion_values = arange(0, 1.01, 0.05)  # 21 values
+```
+
+### 5. Output Preservation
+```python
+# Always save validation results
+if not path.isfile(pickle_threshold_filename):
+    dump(self.avg_score_matrix, open(pickle_threshold_filename, "wb"))
+```
+
+## Example Validation Workflow
+
+```python
+# 1. Initialize validator
+validator = Validator(use_j1979=True, fold_n=5)
+
+# 2. Run validation on sample
+sample.find_lex_thresholds(id_dict)
+
+# 3. Extract optimal parameters
+validator.set_lex_threshold_parameters(sample)
+print(f"Optimal inversion distance: {sample.optimal_bit_dist}")
+print(f"Optimal merge distance: {sample.optimal_merge_dist}")
+
+# 4. Review score matrix
+import matplotlib.pyplot as plt
+plt.imshow(sample.avg_score_matrix, cmap='viridis')
+plt.colorbar(label='Alignment Score')
+plt.xlabel('Merge Distance')
+plt.ylabel('Inversion Distance')
+plt.title('Parameter Optimization Heatmap')
+plt.show()
+```
+
+## Limitations and Considerations
+
+### Known Issues
+1. **Threshold search marked as "NOT WORKING?"**: Validate results manually
+2. **Computational cost**: Full grid search can be slow for large datasets
+3. **No semantic validation**: Only validates lexical (tokenization) consistency
+
+### Future Enhancements
+Potential improvements to the validation framework:
+- Cluster stability metrics across folds
+- Correlation matrix similarity measures
+- Automated parameter recommendation
+- Per-vehicle adaptive thresholds
+
+## Research Applications
+
+Validation enables:
+
+### Algorithm Development
+- Compare different tokenization strategies
+- Evaluate new distance metrics
+- Benchmark improvements
+
+### Cross-Vehicle Studies
+- Measure algorithm generalization
+- Identify manufacturer-specific patterns
+- Quantify variability across makes/models
+
+### Intrusion Detection
+- Establish baseline consistency metrics
+- Detect anomalous tokenization (potential attacks)
+- Validate detection algorithm reliability
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Multi-File Processing" icon="folder-tree" href="/advanced/multi-file-processing">
+    Apply validation across multiple CAN samples
+  </Card>
+  <Card title="Time-Series Analysis" icon="chart-line" href="/advanced/time-series-analysis">
+    Validate causal relationships with EDM
+  </Card>
+</CardGroup>
+
+## Further Reading
+
+- Original dissertation: "Enabling Auditing and Intrusion Detection for Proprietary Controller Area Networks"
+- [scikit-learn K-Fold Documentation](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.KFold.html)
+- Stone, B. (2019). Automated CAN Payload Reverse Engineering [Dissertation]. Air Force Institute of Technology.

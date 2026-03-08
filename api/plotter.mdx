@@ -1,0 +1,360 @@
+---
+title: "Plotter"
+description: "Visualization functions for signals, clusters, and J1979 data"
+---
+
+The `Plotter` module provides functions to generate publication-quality figures of time-series signals organized by arbitration ID, cluster membership, or J1979 PID.
+
+## Configuration
+
+Module-level constants control output format:
+
+```python
+figure_format: str = "png"   # File format: "png", "eps", "pdf", etc.
+figure_dpi: int = 300        # Resolution in dots per inch
+figure_transp: bool = False  # Transparent background
+
+arb_id_folder: str = 'figures'   # Output folder for Arb ID plots
+cluster_folder: str = 'clusters' # Output folder for cluster plots
+j1979_folder: str = 'j1979'      # Output folder for J1979 plots
+```
+
+**Note:** Modify these in the source file to change output settings globally.
+
+## Functions
+
+### plot_j1979
+
+```python
+plot_j1979(
+    a_timer: PipelineTimer,
+    j1979_dict: dict,
+    force: bool = False
+)
+```
+
+Plots all J1979 diagnostic PIDs on a single multi-subplot figure.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="j1979_dict" type="dict" required>
+  J1979 dictionary from PreProcessor (maps PIDs to `J1979` objects)
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate plots even if output folder exists
+</ParamField>
+
+**Output:**
+- Single figure file: `j1979/<format>` (e.g., `j1979.png`)
+- One subplot per PID with title "PID 0xXX: [description]"
+- Black time-series line plots
+- Shared x-axis (time)
+
+**Behavior:**
+- Creates `j1979/` folder if it doesn't exist
+- Skips plotting if folder exists and `force=False`
+- Each subplot shows the PID value over time
+- Figure height scales with number of PIDs (1.3 inches per PID + 1 inch padding)
+
+### plot_signals_by_arb_id
+
+```python
+plot_signals_by_arb_id(
+    a_timer: PipelineTimer,
+    arb_id_dict: dict,
+    signal_dict: dict,
+    force: bool = False
+)
+```
+
+Plots all signals for each arbitration ID with TANG visualization.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="arb_id_dict" type="dict" required>
+  Arbitration ID dictionary from PreProcessor
+</ParamField>
+
+<ParamField path="signal_dict" type="dict" required>
+  Signal dictionary from `generate_signals()`
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate plots even if output folder exists
+</ParamField>
+
+**Output:**
+- One figure per non-static arbitration ID: `figures/0xXXX.<format>`
+- Subplots:
+  - One per signal (normalized time series)
+  - Final subplot: TANG (Transition Aggregation N-Gram)
+- TANG visualization:
+  - Black circles: Non-zero transition frequency bits
+  - Gray triangles: Padding bits (zero frequency)
+  - Dashed vertical lines: Signal boundaries
+
+**Behavior:**
+- Creates `figures/` folder if it doesn't exist
+- Skips static arbitration IDs (all constant signals)
+- Figure height scales with number of signals
+- Subplot titles show signal metadata (bit range, entropy, etc.)
+
+### plot_signals_by_cluster
+
+```python
+plot_signals_by_cluster(
+    a_timer: PipelineTimer,
+    cluster_dict: dict,
+    signal_dict: dict,
+    use_j1979_tags: bool,
+    force: bool = False
+)
+```
+
+Plots all signals in each cluster with optional J1979 labels.
+
+<ParamField path="a_timer" type="PipelineTimer" required>
+  Timer instance for performance tracking
+</ParamField>
+
+<ParamField path="cluster_dict" type="dict" required>
+  Cluster dictionary from `greedy_signal_clustering()` or `label_propagation()`
+</ParamField>
+
+<ParamField path="signal_dict" type="dict" required>
+  Signal dictionary from `generate_signals()` (with optional J1979 labels)
+</ParamField>
+
+<ParamField path="use_j1979_tags" type="bool" required>
+  If True, include J1979 PID labels in subplot titles (if available)
+</ParamField>
+
+<ParamField path="force" type="bool" default="False">
+  If True, regenerate plots even if output folder exists
+</ParamField>
+
+**Output:**
+- One figure per cluster: `clusters/cluster_<ID>.<format>`
+- One subplot per signal in cluster
+- Subplot titles:
+  - Without J1979: "Arb ID 0xXXX [start:stop] (Shannon: X.XX)"
+  - With J1979: "Arb ID 0xXXX [start:stop] [PID_NAME (PCC:0.XX)]"
+
+**Behavior:**
+- Creates `clusters/` folder if it doesn't exist
+- Skips plotting if folder exists and `force=False`
+- Figure height scales with cluster size
+- Useful for semantic interpretation (correlated signals visualized together)
+
+## Usage Examples
+
+### Basic Plotting
+
+```python
+from Plotter import plot_j1979, plot_signals_by_arb_id, plot_signals_by_cluster
+from PipelineTimer import PipelineTimer
+
+# Assume dictionaries are from previous pipeline steps
+a_timer = PipelineTimer(verbose=True)
+
+# Plot J1979 diagnostic data
+if j1979_dictionary:
+    plot_j1979(a_timer, j1979_dictionary, force=False)
+
+# Plot signals organized by arbitration ID
+plot_signals_by_arb_id(
+    a_timer,
+    id_dictionary,
+    signal_dictionary,
+    force=True  # Regenerate even if figures exist
+)
+
+# Plot signals organized by cluster with J1979 labels
+plot_signals_by_cluster(
+    a_timer,
+    cluster_dict,
+    signal_dictionary,
+    use_j1979_tags=True,  # Include PID labels if available
+    force=False
+)
+```
+
+### Complete Pipeline with Plotting
+
+```python
+from PreProcessor import PreProcessor
+from LexicalAnalysis import tokenize_dictionary, generate_signals
+from SemanticAnalysis import (
+    subset_selection,
+    subset_correlation,
+    greedy_signal_clustering,
+    label_propagation,
+    j1979_signal_labeling
+)
+from Plotter import plot_j1979, plot_signals_by_arb_id, plot_signals_by_cluster
+from sklearn.preprocessing import minmax_scale
+from PipelineTimer import PipelineTimer
+
+a_timer = PipelineTimer(verbose=True)
+
+# Preprocessing
+print("##### PREPROCESSING #####")
+pre_processor = PreProcessor("loggerProgram0.log", "pickleArbIDs.p", "pickleJ1979.p")
+id_dictionary, j1979_dictionary = pre_processor.generate_arb_id_dictionary(
+    a_timer, minmax_scale, force=False
+)
+
+if j1979_dictionary:
+    plot_j1979(a_timer, j1979_dictionary, force=False)
+
+# Lexical Analysis
+print("##### LEXICAL ANALYSIS #####")
+tokenize_dictionary(a_timer, id_dictionary, force=False)
+signal_dictionary = generate_signals(
+    a_timer, id_dictionary, "pickleSignals.p", minmax_scale, force=False
+)
+
+plot_signals_by_arb_id(a_timer, id_dictionary, signal_dictionary, force=True)
+
+# Semantic Analysis
+print("##### SEMANTIC ANALYSIS #####")
+subset_df = subset_selection(a_timer, signal_dictionary, "pickleSubset.p", subset_size=0.25)
+corr_matrix = subset_correlation(subset_df, "subset_correlation_matrix.csv")
+cluster_dict = greedy_signal_clustering(corr_matrix, correlation_threshold=0.85)
+
+df_full, corr_full, cluster_dict = label_propagation(
+    a_timer,
+    pickle_clusters_filename="pickleClusters.p",
+    pickle_all_signals_df_filename="pickleAllSignals.p",
+    csv_signals_correlation_filename="complete_correlation.csv",
+    signal_dict=signal_dictionary,
+    cluster_dict=cluster_dict,
+    correlation_threshold=0.85
+)
+
+if j1979_dictionary:
+    signal_dictionary, j1979_corr = j1979_signal_labeling(
+        a_timer,
+        j1979_corr_filename="pickleJ1979_correlation.p",
+        df_signals=df_full,
+        j1979_dict=j1979_dictionary,
+        signal_dict=signal_dictionary,
+        correlation_threshold=0.85
+    )
+
+plot_signals_by_cluster(
+    a_timer,
+    cluster_dict,
+    signal_dictionary,
+    use_j1979_tags=True,
+    force=False
+)
+
+print("All plots generated successfully!")
+```
+
+### Customizing Figure Format
+
+To change output format globally, modify the module constants before importing:
+
+```python
+import Plotter
+
+# Change to EPS for publication
+Plotter.figure_format = "eps"
+Plotter.figure_dpi = 600
+Plotter.figure_transp = True
+
+# Now all plotting functions will use EPS format
+from Plotter import plot_j1979, plot_signals_by_arb_id, plot_signals_by_cluster
+
+# ... continue with plotting ...
+```
+
+## Output Structure
+
+After running all plotting functions:
+
+```
+project/
+├── figures/
+│   ├── 0x124.png
+│   ├── 0x156.png
+│   └── ...
+├── clusters/
+│   ├── cluster_0.png
+│   ├── cluster_1.png
+│   └── ...
+└── j1979/
+    └── j1979.png
+```
+
+## Visualization Details
+
+### TANG Plot (in Arb ID Figures)
+
+The TANG (Transition Aggregation N-Gram) subplot shows:
+- **X-axis**: Bit position (0 to payload length in bits)
+- **Y-axis**: Normalized transition frequency (0.0 to 1.0)
+- **Black circles**: Active signal bits
+- **Gray triangles**: Padding/static bits
+- **Dashed vertical lines**: Signal token boundaries
+
+**Interpretation:**
+- Horizontal plateaus suggest bits belonging to the same signal
+- Sudden jumps indicate signal boundaries
+- Low values near zero indicate padding or static bits
+
+### Signal Subplots
+
+Each signal subplot includes:
+- **Title**: Signal metadata (Arb ID, bit range, entropy, optional J1979 label)
+- **X-axis**: Time (from CAN log timestamps)
+- **Y-axis**: Normalized signal value (0.0 to 1.0 after min-max scaling)
+- **Line color**: Black (consistent across all plots)
+
+### Cluster Plots
+
+Cluster visualization helps identify:
+- **Semantic relationships**: Signals in the same cluster are highly correlated
+- **Visual similarity**: Correlated signals have similar waveforms
+- **J1979 mapping**: Labels show which signals correspond to known PIDs
+
+**Example interpretations:**
+- Cluster with "Vehicle Speed" label → Speedometer-related signals
+- Cluster with "Engine RPM" label → Tachometer-related signals
+- Cluster with no J1979 label → Proprietary signal group (e.g., tire pressure, gear position)
+
+## Performance Considerations
+
+- **Force Flag**: Set `force=True` to regenerate plots, `force=False` to skip if folder exists
+- **File Format**:
+  - **PNG**: Fast, good for previews (default)
+  - **EPS**: Vector format, preferred for publications
+  - **PDF**: Vector format, good for reports
+- **DPI**: Higher values (600+) for print, lower (300) for screen
+- **Figure Size**: Automatically scales with number of subplots
+- **Memory**: Each figure is closed after saving to free memory
+
+## Troubleshooting
+
+### No Plots Generated
+
+**Cause**: Output folder exists and `force=False`
+
+**Solution**: Set `force=True` or manually delete output folders
+
+### Empty Figures
+
+**Cause**: All signals are static or no signals extracted
+
+**Solution**: Check tokenization parameters and DLC filtering in PreProcessor
+
+### Typo in savefig
+
+**Note**: There's a typo in the source code (`bbox_iches` should be `bbox_inches`). This is a known issue in the original implementation and does not affect functionality.

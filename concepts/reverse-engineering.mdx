@@ -1,0 +1,437 @@
+---
+title: 'Reverse Engineering Methods'
+description: 'Advanced techniques for extracting proprietary CAN signals using TANG, Shannon Index, and correlation clustering'
+---
+
+## What is CAN Payload Reverse Engineering?
+
+**CAN payload reverse engineering** is the process of extracting semantic meaning from proprietary Controller Area Network messages without access to the original protocol documentation. This is necessary because automotive OEMs treat their CAN signal definitions as trade secrets.
+
+<Note>
+This research was developed by Dr. Brent Stone at the Air Force Institute of Technology (AFIT) as part of a Ph.D. dissertation titled "Enabling Auditing and Intrusion Detection for Proprietary Controller Area Networks."
+</Note>
+
+## The Challenge
+
+Modern vehicles transmit hundreds of signals over CAN buses, but only a small subset follows public standards like J1979:
+
+### Problems to Solve
+
+1. **Unknown Signal Boundaries**: Which bits belong to which signal?
+2. **Mixed Encodings**: Signals use different byte orders (endianness)
+3. **Variable Bit Lengths**: Signals range from 1 to 64 bits
+4. **Overlapping Signals**: Multiple signals may share payload bytes
+5. **No Ground Truth**: Limited labeled data for validation
+
+```text
+Example: 8-byte payload with unknown signal structure
+Hex:    3C A7 FF 12 34 56 78 9A
+Binary: 00111100 10100111 11111111 ... (64 bits total)
+
+Questions:
+- Where do signals start and end?
+- Are they big-endian or little-endian?
+- What do the values represent physically?
+```
+
+## TANG: Transition Analysis Numerical Gradient
+
+### Concept
+
+**TANG** is a novel metric that measures the frequency of bit transitions in a time series of CAN messages. It's based on the hypothesis that bits belonging to the same numerical signal will exhibit similar transition patterns.
+
+### Algorithm
+
+<Steps>
+  <Step title="Convert to Binary Matrix">
+    Transform hex payload to binary matrix (rows = messages, columns = bit positions).
+    
+    ```python
+    # From ArbID.py
+    self.boolean_matrix = zeros((self.original_data.__len__(), self.dlc * 8), dtype=uint8)
+    
+    for i, row in enumerate(self.original_data.itertuples()):
+        for j, cell in enumerate(row[1:]):
+            if cell > 0:
+                bin_string = format(cell, '08b')
+                self.boolean_matrix[i, j * 8:j * 8 + 8] = [x == '1' for x in bin_string]
+    ```
+  </Step>
+
+  <Step title="Calculate Transitions">
+    Apply XOR operation between consecutive rows to detect bit changes.
+    
+    ```python
+    # From ArbID.py
+    transition_matrix = logical_xor(self.boolean_matrix[:-1, ], self.boolean_matrix[1:, ])
+    ```
+    
+    <Info>
+    XOR returns 1 when bits differ between consecutive messages, effectively counting transitions at each bit position.
+    </Info>
+  </Step>
+
+  <Step title="Sum and Normalize">
+    Sum transitions per column and normalize to [0, 1] range.
+    
+    ```python
+    # From ArbID.py
+    self.tang = sum(transition_matrix, axis=0, dtype=float64)
+    if max(self.tang) > 0:
+        normalize_strategy(self.tang, axis=0, copy=False)
+        self.static = False
+    ```
+  </Step>
+</Steps>
+
+### Interpretation
+
+| TANG Value | Interpretation |
+|------------|----------------|
+| 0.0 | Padding or static bit |
+| 0.1 - 0.3 | Slowly changing signal (e.g., temperature) |
+| 0.4 - 0.7 | Moderately dynamic signal (e.g., speed) |
+| 0.8 - 1.0 | Highly dynamic signal (e.g., RPM, steering angle) |
+
+<Tip>
+TANG patterns within a contiguous numerical signal typically form a **gradient** - adjacent bits have similar transition frequencies, creating a smooth curve when plotted.
+</Tip>
+
+### Example: Tokenization Using TANG
+
+```python
+# From LexicalAnalysis.py - Greedy clustering based on TANG
+def get_composition(arb_id: ArbID, include_padding=False, max_inversion_distance: float = 0.0):
+    tokens = []
+    start_index = 0
+    currently_clustering = False
+    big_endian = True
+    
+    for i, bit_position in enumerate(nditer(arb_id.tang)):
+        if bit_position <= 0.000001:
+            arb_id.padding.append(i)  # Zero TANG = padding
+            if currently_clustering and not include_padding:
+                tokens.append((start_index, i - 1))  # End token
+                currently_clustering = False
+        else:
+            # Detect endianness: big-endian increases, little-endian decreases
+            if currently_clustering:
+                if bit_position >= last_bit_position and big_endian:
+                    pass  # Continue clustering
+                elif bit_position <= last_bit_position and not big_endian:
+                    pass  # Continue clustering
+                elif abs(bit_position - last_bit_position) <= max_inversion_distance:
+                    pass  # Allow small inversions
+                else:
+                    tokens.append((start_index, i - 1))  # End token
+                    start_index = i  # Start new token
+            else:
+                currently_clustering = True
+                start_index = i
+        
+        last_bit_position = bit_position
+    
+    arb_id.tokenization = tokens
+```
+
+<Note>
+The `max_inversion_distance` parameter (default: 0.2) allows for small deviations in the TANG gradient, accommodating noise and rounding in the data.
+</Note>
+
+## Shannon Index: Signal Entropy
+
+### Concept
+
+The **Shannon Index** (also known as Shannon entropy) measures the diversity of values in a signal's time series. It helps distinguish dynamic signals from static or slowly-changing ones.
+
+### Formula
+
+$$
+H = -\sum_{i=1}^{n} p_i \log_{10}(p_i)
+$$
+
+Where:
+- $H$ = Shannon Index
+- $p_i$ = Proportion of samples with value $i$
+- $n$ = Number of unique values
+
+### Implementation
+
+```python
+# From Signal.py
+def set_shannon_index(self):
+    si: float = 0.0
+    n: int = self.time_series.__len__()
+    for count in self.time_series.value_counts():
+        # Calculate proportion of this integer value
+        p_i = count / n
+        # Calculate Shannon Index
+        si += p_i * log10(p_i)
+    si *= -1
+    self.shannon_index = si
+
+def update_static(self):
+    if self.shannon_index >= .000001:
+        self.static = False
+```
+
+### Use in Pipeline
+
+Shannon Index drives the **subset selection** phase:
+
+```python
+# From SemanticAnalysis.py
+def subset_selection(a_timer, signal_dict, subset_pickle, force, subset_size=0.25):
+    # Collect Shannon Index for all signals
+    df = DataFrame(zeros((signal_index, 4)),
+                   columns=["arb_id", "start_index", "stop_index", "Shannon_Index"])
+    
+    # Sort by Shannon Index descending
+    df.sort_values(by="Shannon_Index", inplace=True, ascending=False)
+    
+    # Select top 25% (most dynamic signals)
+    df = df.head(int(round(df.__len__() * subset_size, 0)))
+    
+    return subset_df
+```
+
+<Info>
+Focusing on high-entropy signals reduces computational cost and improves clustering quality by prioritizing the most informative data.
+</Info>
+
+## Correlation-Based Clustering
+
+### Hypothesis
+
+Signals that represent the same physical phenomenon (e.g., vehicle speed) should be **highly correlated** even if they appear in different Arb IDs or use different encodings.
+
+### Pearson Correlation Coefficient
+
+The pipeline uses Pearson's r to measure linear relationships:
+
+$$
+r = \frac{\sum (x_i - \bar{x})(y_i - \bar{y})}{\sqrt{\sum (x_i - \bar{x})^2 \sum (y_i - \bar{y})^2}}
+$$
+
+Values range from -1 (perfect negative correlation) to +1 (perfect positive correlation).
+
+```python
+# Pandas makes this simple
+corr_matrix = subset_df.corr()
+```
+
+### Greedy Clustering Algorithm
+
+The pipeline implements a **greedy agglomerative clustering** approach:
+
+<Steps>
+  <Step title="Initialize">
+    Start with no clusters. Each signal is unlabeled.
+  </Step>
+
+  <Step title="Iterate Correlation Matrix">
+    For each pair of signals with correlation ≥ threshold (default: 0.85):
+    
+    ```python
+    # From SemanticAnalysis.py
+    for n, row in enumerate(correlation_keys):
+        for m, col in enumerate(correlation_keys):
+            result = round(correlation_matrix.iloc[n, m], 2)
+            if result >= correlation_threshold:
+                # Apply clustering rules
+    ```
+  </Step>
+
+  <Step title="Apply Rules">
+    - If both signals unlabeled → Create new cluster
+    - If one labeled → Add unlabeled signal to existing cluster
+    - If both labeled (different clusters) → Merge clusters (if fuzzy labeling)
+    - If both labeled (same cluster) → Skip
+  </Step>
+
+  <Step title="Fuzzy Labeling (Optional)">
+    Allow signals to belong to multiple clusters if they correlate with multiple groups.
+    
+    ```python
+    if fuzzy_labeling:
+        row_label_set = previously_clustered_signals[row]
+        col_label_set = previously_clustered_signals[col]
+        if not row_label_set & col_label_set:  # No intersection
+            cluster_dict[new_cluster_label] = [row, col]
+            previously_clustered_signals[row] = {new_cluster_label} | row_label_set
+            previously_clustered_signals[col] = {new_cluster_label} | col_label_set
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+**Fuzzy labeling** is particularly useful for signals that serve multiple purposes, such as a composite status byte that contains both speed and gear information.
+</Tip>
+
+### Label Propagation
+
+After clustering the top 25% signals, the pipeline **propagates labels** to the remaining signals:
+
+```python
+# From SemanticAnalysis.py
+def label_propagation(a_timer, signal_dict, cluster_dict, correlation_threshold, force):
+    # Calculate correlation for ALL signals (not just subset)
+    correlation_matrix = df.corr()
+    
+    # Propagate labels WITHOUT creating new clusters
+    for n, row in enumerate(correlation_keys):
+        for m, col in enumerate(correlation_keys):
+            if result >= correlation_threshold:
+                if row in previously_clustered_signals.keys():
+                    if col not in previously_clustered_signals.keys():
+                        # Add col to row's existing cluster
+                        cluster_dict[previously_clustered_signals[row]].append(col)
+                        previously_clustered_signals[col] = previously_clustered_signals[row]
+    
+    return df, correlation_matrix, cluster_dict
+```
+
+<Note>
+Label propagation uses the same correlation threshold but **only extends existing clusters** - it never creates new ones. This prevents low-entropy signals from polluting the cluster structure.
+</Note>
+
+## J1979 as Ground Truth
+
+### Strategy
+
+Public J1979 diagnostic signals provide **labeled ground truth** for validation:
+
+```python
+# From SemanticAnalysis.py
+def j1979_signal_labeling(a_timer, j1979_corr_filename, df_signals, 
+                          j1979_dict, signal_dict, correlation_threshold, force):
+    # Combine proprietary signals with J1979 signals
+    df_combined = concat([df_signals, df_j1979], axis=1)
+    
+    # Calculate correlation matrix
+    correlation_matrix = df_combined.corr()
+    
+    # Find max correlation for each signal
+    for index, row in correlation_matrix[df_columns][:-len(df_columns)].iterrows():
+        row = abs(row)
+        max_index = row.idxmax(axis=1, skipna=True)
+        if row[max_index] >= correlation_threshold:
+            signal.j1979_title = max_index  # e.g., "Engine RPM"
+            signal.j1979_pcc = row[max_index]  # Pearson r value
+```
+
+### Example Results
+
+A proprietary signal in Arb ID 0x245, bits 24-39, might show:
+- Correlation with J1979 PID 0x0C (Engine RPM): r = 0.94
+- Auto-labeled as "Engine RPM"
+
+<Info>
+This automatic labeling demonstrates that the pipeline successfully identifies proprietary representations of standardized vehicle parameters.
+</Info>
+
+## Real-World Applications
+
+### 1. Vehicle Security Auditing
+
+Identify anomalous CAN messages by comparing observed signals against known clusters:
+
+```text
+Normal: Speed signal in cluster #3 (r > 0.85 with J1979 speed)
+Anomaly: Speed signal suddenly shows r = 0.2 with cluster #3
+         → Potential spoofing attack detected
+```
+
+### 2. Aftermarket Diagnostics
+
+Extract proprietary signals not available via J1979:
+- Tire pressure monitoring system (TPMS) data
+- Advanced driver assistance system (ADAS) status
+- Battery management system (BMS) metrics in EVs
+
+### 3. Forensic Analysis
+
+Reconstruct vehicle behavior from CAN logs after incidents:
+- Brake application timing
+- Steering angle changes
+- Driver attention monitoring
+
+### 4. Performance Tuning
+
+Access hidden parameters for optimization:
+- Turbocharger boost pressure
+- Fuel injector timing
+- Transmission shift points
+
+## Limitations and Assumptions
+
+### Assumptions
+
+1. **Continuous Numerical Signals**: The pipeline assumes signals represent continuous numerical values (e.g., speed, RPM) rather than discrete states or bitfields
+2. **Consistent Encoding**: Signal definitions remain constant throughout the capture session
+3. **Sufficient Variability**: Signals must change during capture to compute meaningful TANG and Shannon Index values
+4. **Linear Relationships**: Correlation clustering works best for linearly related signals
+
+### Limitations
+
+1. **Static Signals**: Constant values (e.g., VIN, firmware version) produce zero TANG and are ignored
+2. **Event-Driven Messages**: Rare events may lack sufficient samples for statistical analysis
+3. **Complex Encodings**: Non-linear encodings (e.g., logarithmic, lookup tables) may reduce correlation
+4. **Bitfields**: Packed boolean flags within a byte are difficult to separate
+5. **Cryptographic Obfuscation**: Encrypted or authenticated payloads cannot be analyzed
+
+<Note>
+For best results, capture CAN data during **dynamic driving conditions** (acceleration, braking, turning) to maximize signal variability.
+</Note>
+
+### Validation Challenges
+
+Without OEM documentation, validation relies on:
+- Correlation with J1979 ground truth (when available)
+- Manual inspection of signal plots
+- Domain knowledge of vehicle behavior
+- Consistency across multiple capture sessions
+
+## Parameter Tuning
+
+Key parameters that affect pipeline performance:
+
+```python
+# From Main.py
+tokenization_bit_distance = 0.2        # Max TANG inversion in tokens
+subset_selection_size = 0.25           # Top 25% by Shannon Index
+min_correlation_threshold = 0.85       # Clustering threshold
+fuzzy_labeling = True                  # Allow multi-cluster membership
+freq_synchronous_threshold = 0.1       # Transmission frequency consistency
+```
+
+<Tip>
+**Start with defaults**, then adjust based on your data:
+- Increase `tokenization_bit_distance` if signals are fragmented
+- Decrease `min_correlation_threshold` to create larger clusters
+- Disable `fuzzy_labeling` for strict 1:1 cluster assignments
+</Tip>
+
+## Research Background
+
+This work builds on prior research in:
+- **Automated protocol reverse engineering** (Polyglot, AutoFormat)
+- **CAN intrusion detection** (Entropy-based anomaly detection)
+- **Time series clustering** (Hierarchical clustering, DTW)
+
+### Key Innovation
+
+The combination of:
+1. TANG for bit-level signal boundary detection
+2. Shannon Index for entropy-based filtering
+3. Correlation clustering for semantic grouping
+4. J1979 ground truth for validation
+
+...provides a **fully automated pipeline** requiring no manual analysis or protocol documentation.
+
+## Next Steps
+
+- Learn about [CAN Protocol](/concepts/can-protocol) fundamentals
+- Review the [Pipeline Architecture](/concepts/pipeline-overview)
+- Try the [Getting Started](/introduction) guide with your own CAN data
+- Read the full dissertation: AFIT-END-DS-18-D-003.pdf

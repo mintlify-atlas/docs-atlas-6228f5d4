@@ -1,0 +1,342 @@
+---
+title: Time-Series Analysis with R
+description: Advanced causal analysis using Empirical Dynamic Modeling and the rEDM package
+---
+
+## Overview
+
+The R scripts provide advanced time-series analysis capabilities using **Empirical Dynamic Modeling (EDM)** to identify causal relationships between CAN signals. This goes beyond simple correlation to detect directional causality.
+
+<Info>
+EDM analysis is optional but powerful. Use it when you need to understand **why** signals correlate, not just **that** they correlate.
+</Info>
+
+## When to Use EDM vs Built-in Correlation
+
+| Method | Use When | Provides |
+|--------|----------|----------|
+| **Built-in Correlation** | Initial exploration, clustering signals | Symmetric correlation strength |
+| **EDM / CCM** | Understanding causal direction, validating hypotheses | Directional causality, nonlinearity detection |
+
+## Installation and Setup
+
+### R Package Installation
+
+The analysis requires the [rEDM package](https://CRAN.R-project.org/package=rEDM) developed by the Sugihara Lab at UC San Diego:
+
+```r
+install.packages("rEDM")
+library(rEDM)
+```
+
+### Set Working Directory
+
+Point R to your data location:
+
+```r
+setwd("C:/path/to/your/CAN/data")
+```
+
+## CSV Data Format Requirements
+
+EDM requires time-series data in CSV format with named columns:
+
+```csv
+speed,brake,rpm
+45.2,0.0,1850
+45.5,0.0,1860
+45.8,12.3,1840
+44.1,34.7,1820
+...
+```
+
+<Warning>
+Ensure your CSV has:
+- **Header row** with signal names
+- **No missing values** (or handle them appropriately)
+- **Consistent sampling rate** (or interpolate)
+- **Sufficient length** (thousands of samples recommended)
+</Warning>
+
+## EDM Analysis Workflow
+
+The `commands_list.txt` provides a complete analysis pipeline. Here's the step-by-step workflow:
+
+### Step 1: Load Data
+
+```r
+speed_brake_rpm <- read.csv("speed_brake_rpm.csv")
+
+# Extract individual time series
+ts_speed <- speed_brake_rpm$speed
+ts_rpm <- speed_brake_rpm$rpm
+ts_brake <- speed_brake_rpm$brake
+```
+
+### Step 2: Define Train-Test Split
+
+Split data into library (training) and prediction (testing) sets:
+
+```r
+# Use first 50% for training, second 50% for testing
+lib_speed <- c(1, 0.5*length(ts_speed))
+pred_speed <- c(0.5*length(ts_speed)+1, length(ts_speed))
+
+lib_rpm <- c(1, 0.5*length(ts_rpm))
+pred_rpm <- c(0.5*length(ts_rpm)+1, length(ts_rpm))
+
+lib_brake <- c(1, 0.5*length(ts_brake))
+pred_brake <- c(0.5*length(ts_brake)+1, length(ts_brake))
+```
+
+### Step 3: Simplex Projection (Find Optimal Embedding Dimension)
+
+Determine the best embedding dimension **E** for each signal:
+
+```r
+simplex_output_speed <- simplex(ts_speed, lib_speed, pred_speed, silent = TRUE)
+simplex_output_rpm <- simplex(ts_rpm, lib_rpm, pred_rpm, silent = TRUE)
+simplex_output_brake <- simplex(ts_brake, lib_brake, pred_brake, silent = TRUE)
+
+# Save results
+save(simplex_output_speed, file = "simplex_output_speed.Rda")
+save(simplex_output_rpm, file = "simplex_output_rpm.Rda")
+save(simplex_output_brake, file = "simplex_output_brake.Rda")
+```
+
+**Plot embedding results:**
+
+```r
+par(mfrow=c(1,3), cex=1.5)
+
+plot(simplex_output_speed$E, simplex_output_speed$rho, type = "l", 
+     xlab = "Embedding Dimension (E)", 
+     ylab = expression(paste("Forecast Skill (", rho, ")")), 
+     main="Vehicle Speed")
+
+plot(simplex_output_rpm$E, simplex_output_rpm$rho, type = "l", 
+     xlab = "Embedding Dimension (E)", main="Engine RPM")
+
+plot(simplex_output_brake$E, simplex_output_brake$rho, type = "l", 
+     xlab = "Embedding Dimension (E)", main="Brake Pressure")
+```
+
+<Tip>
+The optimal E is where forecast skill (ρ) peaks. Typical values for vehicle CAN data are E=7-10.
+</Tip>
+
+### Step 4: S-Map (Detect Nonlinearity)
+
+S-maps distinguish between red noise and nonlinear deterministic behavior:
+
+```r
+smap_output_speed <- s_map(ts_speed, lib_speed, pred_speed, E = 9, silent = TRUE)
+smap_output_rpm <- s_map(ts_rpm, lib_rpm, pred_rpm, E = 9, silent = TRUE)
+smap_output_brake <- s_map(ts_brake, lib_brake, pred_brake, E = 9, silent = TRUE)
+```
+
+**Interpret S-map results:**
+- If forecast skill increases with θ (theta): **nonlinear dynamics present**
+- If flat across θ values: **linear or random dynamics**
+
+### Step 5: Convergent Cross Mapping (CCM)
+
+CCM reveals **causal direction** between signals:
+
+```r
+# Test if Speed causes RPM (and vice versa)
+speed_xmap_rpm <- ccm(speed_brake_rpm, 
+                      lib_column = "speed", 
+                      target_column = "rpm", 
+                      E = 9, 
+                      lib_sizes = seq(0, 15000, by = 3000), 
+                      num_samples = 10, 
+                      random_libs = TRUE, 
+                      replace = TRUE, 
+                      num_neighbors = "E+1", 
+                      tp = 0, 
+                      silent = TRUE)
+
+rpm_xmap_speed <- ccm(speed_brake_rpm, 
+                      lib_column = "rpm", 
+                      target_column = "speed", 
+                      E = 9, 
+                      lib_sizes = seq(0, 15000, by = 3000), 
+                      num_samples = 10, 
+                      random_libs = TRUE, 
+                      replace = TRUE, 
+                      num_neighbors = "E+1", 
+                      tp = 0, 
+                      silent = TRUE)
+
+# Save results
+save(speed_xmap_rpm, file = "speed_xmap_rpm.Rda")
+save(rpm_xmap_speed, file = "rpm_xmap_speed.Rda")
+```
+
+**Calculate mean cross-map skill:**
+
+```r
+speed_xmap_rpm_mean <- ccm_means(speed_xmap_rpm)
+rpm_xmap_speed_mean <- ccm_means(rpm_xmap_speed)
+```
+
+## Interpreting CCM Results
+
+CCM reveals causal direction through convergence:
+
+```r
+plot(speed_xmap_rpm_mean$lib_size, pmax(0, speed_xmap_rpm_mean$rho), 
+     type = "l", col = "red", 
+     xlab = "Library Size", 
+     ylab = expression(paste("Cross Map Skill (", rho, ")")), 
+     ylim = c(0.86, 0.95))
+lines(rpm_xmap_speed_mean$lib_size, pmax(0, rpm_xmap_speed_mean$rho), 
+      col = "blue")
+legend(x = "topleft", 
+       legend = c("Speed xmap RPM", "RPM xmap Speed"), 
+       col = c("red", "blue"), lwd = 1)
+```
+
+### Reading CCM Plots
+
+<Info>
+**X xmap Y** means: "Can we predict Y using X's attractor?"
+
+- If **X xmap Y converges** (skill increases with library size): **Y causes X**
+- If **Y xmap X converges**: **X causes Y**
+- If **both converge**: **Bidirectional coupling**
+- If **neither converges**: **No causal relationship**
+</Info>
+
+### Example Interpretation
+
+For Speed and RPM:
+- **Speed xmap RPM**: Moderate convergence (ρ ≈ 0.92)
+- **RPM xmap Speed**: Strong convergence (ρ ≈ 0.94)
+
+**Conclusion**: Bidirectional coupling with **RPM having slightly stronger causal influence on Speed**.
+
+## Real Example Analyses from commands_list.txt
+
+The repository includes example analyses for three signal pairs:
+
+### 1. Speed & RPM
+```r
+speed_xmap_rpm <- ccm(speed_brake_rpm, lib_column = "speed", 
+                      target_column = "rpm", E = 9, 
+                      lib_sizes = seq(0, 15000, by = 3000), 
+                      num_samples = 10, random_libs = TRUE, 
+                      replace = TRUE, silent = TRUE)
+```
+**Expected Result**: Strong bidirectional coupling (both converge above ρ=0.86)
+
+### 2. Brake Pressure & RPM
+```r
+brake_xmap_rpm <- ccm(speed_brake_rpm, lib_column = "brake", 
+                      target_column = "rpm", E = 9, 
+                      lib_sizes = seq(0, 15000, by = 3000), 
+                      num_samples = 10, random_libs = TRUE, 
+                      replace = TRUE, silent = TRUE)
+```
+**Expected Result**: Weaker coupling (ρ ≈ 0.35-0.49), asymmetric causality
+
+### 3. Speed & Brake Pressure
+```r
+speed_xmap_brake <- ccm(speed_brake_rpm, lib_column = "speed", 
+                        target_column = "brake", E = 9, 
+                        lib_sizes = seq(0, 15000, by = 3000), 
+                        num_samples = 10, random_libs = TRUE, 
+                        replace = TRUE, silent = TRUE)
+```
+**Expected Result**: Moderate coupling (ρ ≈ 0.6-0.9), driver behavior mediated
+
+## Understanding .Rda Output Files
+
+`.Rda` files store R data frames for later reuse:
+
+```r
+# Save current analysis
+save(speed_xmap_rpm, file = "speed_xmap_rpm.Rda")
+
+# Load previous analysis
+load(file = "speed_xmap_rpm.Rda")
+```
+
+**Benefits:**
+- Avoid re-running expensive CCM calculations
+- Share results without sharing raw data
+- Reproducible analysis workflow
+
+## Cross-Correlation Analysis
+
+For simpler correlation without causality:
+
+```r R/cross-correlation_speed_rpm.R
+for (ccm_from in vars) { 
+  for (ccm_to in vars[vars != ccm_from]) { 
+    cf_temp <- ccf(speed_brake_rpm[, ccm_from], 
+                   speed_brake_rpm[, ccm_to], 
+                   type = "correlation", 
+                   lag.max = 500, 
+                   plot = FALSE)$acf
+    corr_matrix[ccm_from, ccm_to] <- max(abs(cf_temp)) 
+  } 
+}
+```
+
+This finds maximum absolute correlation across all time lags up to 500 samples.
+
+## Visualizing Causal Relationships
+
+Create publication-ready plots:
+
+```r
+pdf(file = "ccm_one_row.pdf", width = 5.5, height = 2.0, family = "Helvetica")
+op <- par(mfrow = c(1,3), cex.axis=1, cex.lab=1, 
+          oma = c(3,3,1,0) + 0.1, mar = c(0,1,1,1) + 0.1)
+
+plot(speed_xmap_rpm_mean$lib_size, pmax(0, speed_xmap_rpm_mean$rho), 
+     type = "l", col = "red", main="Speed & RPM", 
+     xlim = c(5000, 15000), ylim = c(0.86, 0.95))
+lines(rpm_xmap_speed_mean$lib_size, pmax(0, rpm_xmap_speed_mean$rho), 
+      col = "blue")
+legend(x = "bottomright", legend = c("S xmap R", "R xmap S"), 
+       col = c("red", "blue"), lwd = 1)
+
+title(xlab = "Library Size", ylab = "Cross Map Skill (rho)", outer = TRUE)
+par(op)
+dev.off()
+```
+
+## Best Practices
+
+1. **Sufficient data length**: Use at least 5000+ samples for reliable CCM
+2. **Proper train-test split**: 50-50 or 70-30 split recommended
+3. **Multiple library sizes**: Test convergence with varying library sizes
+4. **Save intermediate results**: EDM computations are expensive
+5. **Validate with domain knowledge**: CCM results should match physical expectations
+
+<Tip>
+For vehicle CAN data, expect:
+- **Strong**: Speed ↔ RPM, Speed ↔ Wheel speeds
+- **Moderate**: Brake ↔ Speed, Throttle ↔ RPM
+- **Weak**: Brake ↔ Steering, RPM ↔ Temperature
+</Tip>
+
+## Further Reading
+
+- [rEDM Documentation](https://CRAN.R-project.org/package=rEDM)
+- [Sugihara Lab at UC San Diego](https://deepeco.ucsd.edu/)
+- Original dissertation: "Enabling Auditing and Intrusion Detection for Proprietary Controller Area Networks"
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Validation" icon="check-circle" href="/advanced/validation">
+    Quantify pipeline consistency with train-test validation
+  </Card>
+  <Card title="Multi-File Processing" icon="folder-tree" href="/advanced/multi-file-processing">
+    Process multiple CAN samples in batch
+  </Card>
+</CardGroup>

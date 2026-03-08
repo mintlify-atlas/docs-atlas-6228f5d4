@@ -1,0 +1,98 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "CAN Reverse Engineering",
+  "projectDescription": "Automated payload reverse engineering pipeline for the Controller Area Network (CAN) protocol using machine learning.",
+  "theme": "aspen",
+  "primaryColor": "#bd8236",
+  "lightColor": "#dad2cb",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/can-protocol",
+              "concepts/pipeline-overview",
+              "concepts/reverse-engineering"
+            ]
+          },
+          {
+            "group": "Pipeline",
+            "pages": [
+              "pipeline/preprocessing",
+              "pipeline/lexical-analysis",
+              "pipeline/semantic-analysis",
+              "pipeline/visualization"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/multi-file-processing",
+              "advanced/time-series-analysis",
+              "advanced/validation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Classes",
+            "pages": [
+              "api/arbid",
+              "api/signal",
+              "api/j1979"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "api/preprocessor",
+              "api/lexical-analysis",
+              "api/semantic-analysis",
+              "api/plotter"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automated CAN payload reverse engineering",
+    "Bit-level lexical tokenization and signal extraction",
+    "Correlation-based semantic clustering",
+    "J1979 standard signal identification",
+    "Time series visualization and analysis",
+    "Multi-file batch processing support",
+    "Empirical Dynamic Modeling (EDM) with R integration"
+  ],
+  "publicApiSurface": [
+    "PreProcessor.generate_arb_id_dictionary",
+    "tokenize_dictionary",
+    "generate_signals",
+    "subset_selection",
+    "subset_correlation",
+    "greedy_signal_clustering",
+    "label_propagation",
+    "j1979_signal_labeling",
+    "plot_j1979",
+    "plot_signals_by_arb_id",
+    "plot_signals_by_cluster",
+    "ArbID",
+    "Signal",
+    "J1979"
+  ]
+}
